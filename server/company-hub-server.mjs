@@ -2886,7 +2886,7 @@ const server = http.createServer(async (req, res) => {
         auth = authenticate(req);
       }
       const result = await entry.handler(req, res, auth);
-      if (res.writableEnded) return;
+      if (res.writableEnded || res.headersSent) return;
       sendOk(res, result ?? {});
       return;
     }
