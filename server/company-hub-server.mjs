@@ -579,7 +579,7 @@ function knowledgeTextFor(doc) {
 
 function knowledgeDocs(companyId, groupId) {
   return (db.data.knowledgeDocs ?? []).filter(
-    (doc) => doc.companyId === companyId && (doc.groupId === null || doc.groupId === groupId),
+    (doc) => doc.companyId === companyId && !doc.supersededBy && (doc.groupId === null || doc.groupId === groupId),
   );
 }
 
@@ -615,6 +615,86 @@ function knowledgeUpsertEntity(companyId, name, type = 'person') {
   };
   db.data.knowledgeEntities.push(entity);
   return entity;
+}
+
+function knowledgeAddEntity(companyId, name, type, aliases = []) {
+  const entity = knowledgeUpsertEntity(companyId, name, type);
+  if (!entity) return null;
+  for (const alias of aliases) {
+    const clean = knowledgeEntityName(alias);
+    if (clean && clean !== entity.name && !entity.aliases.includes(clean)) entity.aliases.push(clean);
+  }
+  return entity;
+}
+
+function knowledgeAddRelation(companyId, docId, subjectName, predicate, objectName) {
+  const subject = knowledgeAddEntity(companyId, subjectName);
+  const object = knowledgeAddEntity(companyId, objectName);
+  if (!subject || !object || subject.id === object.id) return;
+  const exists = (db.data.knowledgeRelations ?? []).some(
+    (relation) =>
+      relation.docId === docId &&
+      relation.subjectId === subject.id &&
+      relation.predicate === predicate &&
+      relation.objectId === object.id,
+  );
+  if (exists) return;
+  db.data.knowledgeRelations.push({
+    id: randomId('rel'),
+    companyId,
+    docId,
+    subjectId: subject.id,
+    predicate,
+    objectId: object.id,
+    createdAt: now(),
+  });
+}
+
+async function enrichKnowledgeGraphWithLlm(company, doc, text) {
+  const config = chatAiConfig();
+  if (!config.apiKey) return;
+  const prompt = [
+    '你是知识图谱抽取器。只抽取文中明确出现的人、组织、项目，以及文中明确陈述的关系；不要推测。',
+    '别名只在文中明确写出（如“张三（张主管）”“张主管，别名张三”）时才填。',
+    '输出严格 JSON：{"entities":[{"name":"","type":"person|org|project","aliases":[]}],"relations":[{"subject":"","predicate":"","object":""}]}',
+    '没有明确关系就返回空数组。只输出 JSON。',
+    '',
+    String(text || '').slice(0, 12000),
+  ].join('\n');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
+  try {
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` },
+      body: JSON.stringify({
+        model: config.model,
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0,
+        max_tokens: 1200,
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return;
+    const data = await response.json();
+    let content = String(data?.choices?.[0]?.message?.content ?? '').trim();
+    content = content.replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+    const parsed = JSON.parse(content);
+    for (const entity of Array.isArray(parsed.entities) ? parsed.entities.slice(0, 40) : []) {
+      knowledgeAddEntity(company.id, entity?.name, entity?.type === 'org' || entity?.type === 'project' ? entity.type : 'person', Array.isArray(entity?.aliases) ? entity.aliases : []);
+    }
+    for (const relation of Array.isArray(parsed.relations) ? parsed.relations.slice(0, 60) : []) {
+      const subject = knowledgeEntityName(relation?.subject);
+      const object = knowledgeEntityName(relation?.object);
+      const predicate = String(relation?.predicate || '').trim().slice(0, 40);
+      if (subject && object && predicate) knowledgeAddRelation(company.id, doc.id, subject, predicate, object);
+    }
+  } catch (error) {
+    console.warn('[company-hub] LLM 知识图谱抽取失败，保留规则结果', String(error.message || error));
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function knowledgeExtractGraph(companyId, doc, text) {
@@ -833,6 +913,8 @@ function knowledgeDocView(doc) {
     version: doc.version || '',
     effectiveAt: doc.effectiveAt || null,
     authority: doc.authority || 'normal',
+    supersedes: doc.supersedes || null,
+    supersededBy: doc.supersededBy || null,
     createdAt: doc.createdAt,
     createdByName: memberName(doc.createdBy),
   };
@@ -2157,11 +2239,24 @@ route('POST', /^\/api\/knowledge$/, async (req) => {
   if (!raw) throw bad('缺少文件内容');
   const buffer = Buffer.from(raw, 'base64');
   if (!buffer.length) throw bad('文件为空');
+  const existing = db.data.knowledgeDocs.find(
+    (entry) =>
+      entry.companyId === auth.company.id &&
+      entry.groupId === groupId &&
+      entry.name === cleanFileName(name) &&
+      !entry.supersededBy,
+  );
   const doc = saveKnowledgeDoc(auth.company, auth, groupId, name, buffer, body.mime, {
     version: body.version,
     effectiveAt: body.effectiveAt,
     authority: body.authority,
   });
+  if (existing && existing.id !== doc.id) {
+    doc.supersedes = existing.id;
+    existing.supersededBy = doc.id;
+  }
+  await db.save();
+  await enrichKnowledgeGraphWithLlm(auth.company, doc, knowledgeTextFor(doc));
   await db.save();
   return { doc: knowledgeDocView(doc) };
 });
@@ -2234,6 +2329,18 @@ route('POST', /^\/api\/knowledge\/entities\/alias$/, async (req) => {
   if (!entity.aliases.includes(alias)) entity.aliases.push(alias);
   await db.save();
   return { entity: { id: entity.id, name: entity.name, aliases: entity.aliases } };
+});
+
+route('POST', /^\/api\/knowledge\/reindex$/, async (req) => {
+  const auth = authenticate(req);
+  const docs = (db.data.knowledgeDocs ?? []).filter((doc) => doc.companyId === auth.company.id && !doc.supersededBy);
+  for (const doc of docs) {
+    const text = knowledgeTextFor(doc);
+    knowledgeExtractGraph(auth.company.id, doc, text);
+    await enrichKnowledgeGraphWithLlm(auth.company, doc, text);
+  }
+  await db.save();
+  return { indexed: docs.length, entities: (db.data.knowledgeEntities ?? []).filter((entity) => entity.companyId === auth.company.id).length };
 });
 
 route('POST', /^\/api\/knowledge\/search$/, async (req) => {

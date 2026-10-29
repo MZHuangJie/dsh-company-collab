@@ -218,6 +218,7 @@ window.__ModuleLoader__.load({
       'knowledge.scopeGroup': '本群',
       'knowledge.scopeCompany': '全公司',
       'knowledge.chunks': '片段',
+      'knowledge.superseded': '已被新版本替代',
       'knowledge.empty': '还没有知识文档',
       'knowledge.upload': '上传文档',
       'knowledge.tooLarge': '文件超过 10MB',
@@ -466,6 +467,7 @@ window.__ModuleLoader__.load({
       'knowledge.scopeGroup': 'This group',
       'knowledge.scopeCompany': 'Whole company',
       'knowledge.chunks': 'chunks',
+      'knowledge.superseded': 'superseded',
       'knowledge.empty': 'No knowledge documents yet',
       'knowledge.upload': 'Upload',
       'knowledge.tooLarge': 'File exceeds 10MB',
@@ -2910,7 +2912,7 @@ window.__ModuleLoader__.load({
                       h(
                         'div',
                         { className: 'dcc-note' },
-                        `${doc.groupId ? t('knowledge.scopeGroup') : t('knowledge.scopeCompany')} · ${Math.ceil((doc.size || 0) / 1024)} KB · ${doc.chunks || 0} ${t('knowledge.chunks')}`,
+                        `${doc.groupId ? t('knowledge.scopeGroup') : t('knowledge.scopeCompany')} · ${Math.ceil((doc.size || 0) / 1024)} KB · ${doc.chunks || 0} ${t('knowledge.chunks')}${doc.supersededBy ? ` · ${t('knowledge.superseded')}` : ''}`,
                       ),
                     ),
                     h(
