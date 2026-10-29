@@ -104,6 +104,7 @@ window.__ModuleLoader__.load({
       'run.finished': '已完成，过程已折叠',
       'run.finishedShort': '已完成',
       'run.used': '用时 {duration}',
+      'run.exploring': '正在深度探索中',
       'run.steps': '步',
       'run.failed': '失败',
       'run.tool.bash': '运行命令',
@@ -310,6 +311,7 @@ window.__ModuleLoader__.load({
       'run.finished': 'Done — process collapsed',
       'run.finishedShort': 'Done',
       'run.used': '{duration}',
+      'run.exploring': 'Deep diving',
       'run.steps': 'steps',
       'run.failed': 'Failed',
       'run.tool.bash': 'Run command',
@@ -558,6 +560,10 @@ window.__ModuleLoader__.load({
 .dcc-taskStripLabel{font-size:11px;color:var(--dsw-alias-brand-primary);font-weight:600;flex:none}
 .dcc-taskStripChip{flex:none;max-width:280px;display:inline-flex;align-items:center;gap:5px;height:23px;padding:0 8px;border-radius:999px;border:.5px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 26%,transparent);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:11px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dcc-taskStripChip:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-brand-primary)}
+.dcc-workingBar{flex:none;display:flex;align-items:center;gap:7px;padding:4px 18px 0;font-size:11px;color:var(--dsw-alias-brand-primary)}
+.dcc-workingPulse{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-brand-primary);animation:dcc-pulse 1.4s ease-in-out infinite}
+.dcc-workingTime{margin-left:auto;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
+@keyframes dcc-pulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1)}}
 .dcc-composer{flex:none;padding:10px 16px 16px;display:flex;flex-direction:column;gap:6px}
 .dcc-composerBox{position:relative;display:flex;flex-direction:column;border:.5px solid var(--dsw-alias-border-l2);border-radius:14px;background:var(--dsw-alias-bg-layer-1);padding:9px 10px 7px;transition:border-color .12s}
 .dcc-composerBox:focus-within{border-color:var(--dsw-alias-border-l2);box-shadow:none;outline:none}
@@ -2287,6 +2293,21 @@ window.__ModuleLoader__.load({
       return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`;
     }
 
+    function WorkingStatus({ t, startedAt }) {
+      const [now, setNow] = React.useState(Date.now());
+      React.useEffect(() => {
+        const timer = setInterval(() => setNow(Date.now()), 1000);
+        return () => clearInterval(timer);
+      }, []);
+      return h(
+        'div',
+        { className: 'dcc-workingBar' },
+        h('span', { className: 'dcc-workingPulse' }),
+        h('span', { className: 'dcc-workingLabel' }, t('run.exploring')),
+        h('span', { className: 'dcc-workingTime' }, formatDuration(now - startedAt)),
+      );
+    }
+
     function RunActivity({ t, messages, finished, finishedAt }) {
       const [open, setOpen] = React.useState(false);
       React.useEffect(() => {
@@ -2770,6 +2791,7 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'dcc-emptyDesc' }, t('chat.noMessages')),
               ),
         ),
+        live ? h(WorkingStatus, { t, startedAt: live.startedAt }) : null,
         h(
           'div',
           { className: 'dcc-composer' },
