@@ -588,6 +588,31 @@ class CompanyHub {
     return result;
   }
 
+  async knowledge(groupId) {
+    const result = await this.fetchJson('GET', `/api/knowledge?groupId=${encodeURIComponent(groupId || '')}`);
+    return result.items ?? [];
+  }
+
+  async uploadKnowledge(groupId, name, dataBase64, mime) {
+    const result = await this.fetchJson('POST', '/api/knowledge', {
+      name,
+      dataBase64,
+      mime,
+      groupId: groupId || null,
+    });
+    return result.doc;
+  }
+
+  async deleteKnowledge(docId) {
+    await this.fetchJson('DELETE', `/api/knowledge/${encodeURIComponent(docId)}`);
+    return { removed: true };
+  }
+
+  async searchKnowledge(query, groupId) {
+    const result = await this.fetchJson('POST', '/api/knowledge/search', { query, groupId: groupId || null });
+    return result.items ?? [];
+  }
+
   async sendMessage(groupId, text, options = {}) {
     const body = { text: String(text || '').trim(), task: options.task === true };
     if (options.asAi === true) body.asAi = true;
@@ -756,6 +781,18 @@ function handleApi(req, res) {
         const result = await hub.messages(groupId, since);
         return { ok: true, ...result };
       }
+      case 'GET knowledge': {
+        const groupId = url.searchParams.get('groupId') ?? '';
+        return { ok: true, items: await hub.knowledge(groupId) };
+      }
+      case 'POST knowledge': {
+        const doc = await hub.uploadKnowledge(body.groupId, body.name, body.dataBase64, body.mime);
+        return { ok: true, doc };
+      }
+      case 'POST knowledge/delete':
+        return hub.deleteKnowledge(body.docId);
+      case 'POST knowledge/search':
+        return { ok: true, items: await hub.searchKnowledge(body.query, body.groupId) };
       case 'GET directory':
         return { ok: true, items: await hub.listDirectory(url.searchParams.get('q') ?? '') };
       case 'POST settings': {

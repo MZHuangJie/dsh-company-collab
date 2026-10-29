@@ -211,6 +211,16 @@ window.__ModuleLoader__.load({
       'notice.clipboardFailed': '无法访问剪贴板',
       'modal.group.title': '新建群组',
       'modal.group.name': '群组名称',
+      'knowledge.title': 'RAG 知识库',
+      'knowledge.button': '知识库',
+      'knowledge.hint': '上传 txt / md / csv / json / html / docx / pdf；文档存服务端，群聊 @AI 时自动检索并引用。',
+      'knowledge.scopeGroup': '本群',
+      'knowledge.scopeCompany': '全公司',
+      'knowledge.chunks': '片段',
+      'knowledge.empty': '还没有知识文档',
+      'knowledge.upload': '上传文档',
+      'knowledge.tooLarge': '文件超过 10MB',
+      'knowledge.deleteConfirm': '删除知识文档「{name}」？',
       'modal.group.repoMode': 'Git 仓库',
       'modal.group.repoNew': '新建远程仓库',
       'modal.group.repoLocal': '使用本地目录',
@@ -436,6 +446,16 @@ window.__ModuleLoader__.load({
       'notice.clipboardFailed': 'Clipboard unavailable',
       'modal.group.title': 'New group',
       'modal.group.name': 'Group name',
+      'knowledge.title': 'RAG knowledge base',
+      'knowledge.button': 'Knowledge',
+      'knowledge.hint': 'Upload txt / md / csv / json / html / docx / pdf. Files live on the server and are retrieved automatically when someone @AI in the group.',
+      'knowledge.scopeGroup': 'This group',
+      'knowledge.scopeCompany': 'Whole company',
+      'knowledge.chunks': 'chunks',
+      'knowledge.empty': 'No knowledge documents yet',
+      'knowledge.upload': 'Upload',
+      'knowledge.tooLarge': 'File exceeds 10MB',
+      'knowledge.deleteConfirm': 'Delete knowledge document "{name}"?',
       'modal.group.repoMode': 'Git repository',
       'modal.group.repoNew': 'Create remote repo',
       'modal.group.repoLocal': 'Use local directory',
@@ -693,6 +713,10 @@ window.__ModuleLoader__.load({
 .dcc-checkRow input{accent-color:var(--dsw-alias-brand-primary);margin:0}
 .dcc-checkRow .dcc-grow{flex:1;min-width:0}
 .dcc-checkName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcc-knowledgeList{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow-y:auto;border:.5px solid var(--dsw-alias-border-l1);border-radius:9px;padding:6px}
+.dcc-knowledgeItem{display:flex;align-items:center;gap:8px;padding:6px 7px;border-radius:7px;background:var(--dsw-alias-bg-layer-1)}
+.dcc-knowledgeMain{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.dcc-knowledgeName{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcc-checkRole{font-size:10px;color:var(--dsw-alias-label-tertiary)}
 .dcc-banner{flex:none;display:flex;align-items:center;gap:8px;padding:7px 16px;font-size:11.5px;color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,var(--dsw-alias-bg-base));border-bottom:.5px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 25%,transparent)}
 .dcc-toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);z-index:70;max-width:min(520px,90vw);padding:8px 14px;border-radius:999px;font-size:12px;background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l2);box-shadow:0 10px 30px rgba(0,0,0,.24);color:var(--dsw-alias-label-primary);display:flex;align-items:center;gap:7px;animation:dcc-toast-in .18s ease-out}
@@ -985,6 +1009,11 @@ window.__ModuleLoader__.load({
         ['rect', { x: 4.5, y: 10, width: 15, height: 10, rx: 2.4 }],
         ['path', { d: 'M8 10V7.5a4 4 0 0 1 8 0V10' }],
       ],
+      book: [
+        ['path', { d: 'M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15.5H6.5A2.5 2.5 0 0 0 4 21V5.5Z' }],
+        ['path', { d: 'M4 18.5A2.5 2.5 0 0 1 6.5 16H20' }],
+        ['path', { d: 'M8 7h8M8 10h6' }],
+      ],
     };
 
     function Icon({ name, size = 16 }) {
@@ -1237,6 +1266,17 @@ window.__ModuleLoader__.load({
         addContact: (employeeId) => act('/contacts', { employeeId }),
         removeContact: (employeeId) => act('/contacts', { employeeId, remove: true }),
         createGroup: (name, memberIds, repo) => act('/groups', { name, memberIds, repo }),
+        knowledge: async (groupId) => {
+          const json = await request('GET', `/knowledge?groupId=${encodeURIComponent(groupId || '')}`);
+          return json.items ?? [];
+        },
+        uploadKnowledge: (groupId, name, dataBase64, mime) =>
+          request('POST', '/knowledge', { groupId, name, dataBase64, mime }),
+        deleteKnowledge: (docId) => request('POST', '/knowledge/delete', { docId }),
+        searchKnowledge: async (query, groupId) => {
+          const json = await request('POST', '/knowledge/search', { query, groupId });
+          return json.items ?? [];
+        },
         async openGroup(groupId) {
           publish({ selectedGroup: groupId });
           const existing = snapshot.messages[groupId];
@@ -2668,6 +2708,139 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function KnowledgeDialog({ t, snap, group, onClose }) {
+      const store = shared.store;
+      const [items, setItems] = React.useState([]);
+      const [loading, setLoading] = React.useState(true);
+      const [busy, setBusy] = React.useState(false);
+      const [scope, setScope] = React.useState('group');
+      const [error, setError] = React.useState('');
+      const fileInput = React.useRef(null);
+
+      const load = async () => {
+        try {
+          setItems(await store.knowledge(group.id));
+          setError('');
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      React.useEffect(() => {
+        load();
+      }, [group.id]);
+
+      const upload = async (file) => {
+        if (!file) return;
+        if (file.size > 10 * 1024 * 1024) {
+          setError(t('knowledge.tooLarge'));
+          return;
+        }
+        setBusy(true);
+        setError('');
+        try {
+          const dataBase64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+          });
+          await store.uploadKnowledge(scope === 'group' ? group.id : null, file.name, dataBase64, file.type);
+          await load();
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setBusy(false);
+          if (fileInput.current) fileInput.current.value = '';
+        }
+      };
+
+      const remove = async (doc) => {
+        if (!window.confirm(t('knowledge.deleteConfirm', { name: doc.name }))) return;
+        setBusy(true);
+        try {
+          await store.deleteKnowledge(doc.id);
+          await load();
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return h(
+        Modal,
+        {
+          t,
+          title: t('knowledge.title'),
+          onClose,
+          footer: [h('button', { key: 'close', type: 'button', className: 'dcc-btn', onClick: onClose }, t('action.close'))],
+        },
+        h('p', { className: 'dcc-note' }, t('knowledge.hint')),
+        h(
+          'div',
+          { className: 'dcc-inline', style: { alignItems: 'center' } },
+          h(
+            'select',
+            { className: 'dcc-input', value: scope, onChange: (event) => setScope(event.target.value), style: { width: 140 } },
+            h('option', { value: 'group' }, t('knowledge.scopeGroup')),
+            h('option', { value: 'company' }, t('knowledge.scopeCompany')),
+          ),
+          h('input', {
+            ref: fileInput,
+            type: 'file',
+            accept: '.txt,.md,.markdown,.csv,.json,.html,.htm,.docx,.pdf',
+            style: { display: 'none' },
+            onChange: (event) => upload(event.target.files?.[0]),
+          }),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'dcc-btn',
+              'data-primary': '',
+              disabled: busy,
+              onClick: () => fileInput.current?.click(),
+            },
+            h(Icon, { name: 'plus', size: 13 }),
+            busy ? t('loading') : t('knowledge.upload'),
+          ),
+        ),
+        error ? h(ErrorLine, { text: error }) : null,
+        h(
+          'div',
+          { className: 'dcc-knowledgeList' },
+          loading
+            ? h('div', { className: 'dcc-note' }, t('loading'))
+            : items.length
+              ? items.map((doc) =>
+                  h(
+                    'div',
+                    { key: doc.id, className: 'dcc-knowledgeItem' },
+                    h(
+                      'div',
+                      { className: 'dcc-knowledgeMain' },
+                      h('div', { className: 'dcc-knowledgeName' }, doc.name),
+                      h(
+                        'div',
+                        { className: 'dcc-note' },
+                        `${doc.groupId ? t('knowledge.scopeGroup') : t('knowledge.scopeCompany')} · ${Math.ceil((doc.size || 0) / 1024)} KB · ${doc.chunks || 0} ${t('knowledge.chunks')}`,
+                      ),
+                    ),
+                    h(
+                      'button',
+                      { type: 'button', className: 'dcc-miniBtn', disabled: busy, onClick: () => remove(doc) },
+                      t('action.delete'),
+                    ),
+                  ),
+                )
+              : h('div', { className: 'dcc-note' }, t('knowledge.empty')),
+        ),
+      );
+    }
+
     function ChatPane({ t, snap, onNewGroup }) {
       const store = shared.store;
       const data = snap.data;
@@ -2678,6 +2851,7 @@ window.__ModuleLoader__.load({
       const [sending, setSending] = React.useState(false);
       const [mention, setMention] = React.useState(null);
       const [live, setLive] = React.useState(null);
+      const [showKnowledge, setShowKnowledge] = React.useState(false);
       const scroller = React.useRef(null);
       const textarea = React.useRef(null);
 
@@ -2883,6 +3057,17 @@ window.__ModuleLoader__.load({
               {
                 type: 'button',
                 className: 'dcc-miniBtn',
+                title: t('knowledge.title'),
+                onClick: () => setShowKnowledge(true),
+              },
+              h(Icon, { name: 'book', size: 12 }),
+              t('knowledge.button'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dcc-miniBtn',
                 title: t('repo.buttonHint'),
                 onClick: async () => {
                   try {
@@ -3059,6 +3244,7 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
+        showKnowledge ? h(KnowledgeDialog, { t, snap, group, onClose: () => setShowKnowledge(false) }) : null,
       );
     }
 

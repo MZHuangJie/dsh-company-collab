@@ -63,6 +63,8 @@ const args = parseArgs(process.argv.slice(2));
 const DATA_DIR = args.data;
 const DB_PATH = path.join(DATA_DIR, 'db.json');
 const GIT_ROOT = path.resolve(process.env.COMPANY_GIT_ROOT || path.join(DATA_DIR, 'git'));
+const KNOWLEDGE_ROOT = path.resolve(process.env.COMPANY_KNOWLEDGE_ROOT || path.join(DATA_DIR, 'knowledge'));
+const KNOWLEDGE_MAX_BYTES = 10 * 1024 * 1024;
 
 // ---------------------------------------------------------------- utilities
 
@@ -134,6 +136,7 @@ function emptyDb() {
     reads: [],
     aiJobs: [],
     approvals: [],
+    knowledgeDocs: [],
   };
 }
 
@@ -475,6 +478,223 @@ function serveGroupEvents(req, res, url) {
   res.on('close', cleanup);
 }
 
+const KNOWLEDGE_TEXT_CACHE = new Map();
+const KNOWLEDGE_STOPWORDS = new Set(['the', 'and', 'for', 'that', 'with', 'this', 'from', 'what', 'how', 'why', 'are', 'was', 'were', '的', '了', '是', '在', '和', '与', '及', '或', '一个', '可以', '如何', '什么', '为什么', '请问']);
+
+function knowledgeExt(filePath, name) {
+  const ext = path.extname(name || filePath).toLowerCase();
+  if (['.txt', '.md', '.markdown', '.csv', '.json', '.log', '.yml', '.yaml'].includes(ext)) {
+    return fs.readFileSync(filePath, 'utf8');
+  }
+  if (ext === '.html' || ext === '.htm') {
+    return fs
+      .readFileSync(filePath, 'utf8')
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
+  }
+  if (ext === '.docx') {
+    const result = spawnSync('unzip', ['-p', filePath, 'word/document.xml'], { encoding: 'utf8', maxBuffer: 20 * 1024 * 1024 });
+    if (result.status !== 0) throw bad('无法读取 DOCX 文件');
+    return result.stdout
+      .replace(/<w:tab[^>]*\/>/gi, '\t')
+      .replace(/<\/w:p>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
+  }
+  if (ext === '.pdf') {
+    const script = [
+      'import sys',
+      'from pypdf import PdfReader',
+      'r=PdfReader(sys.argv[1])',
+      'print("\\n\\n".join((p.extract_text() or "") for p in r.pages))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', script, filePath], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+    if (result.status !== 0) throw bad(`无法解析 PDF：${String(result.stderr || '').slice(0, 200)}`);
+    return result.stdout;
+  }
+  throw bad('暂不支持该文件类型；支持 txt / md / csv / json / html / docx / pdf');
+}
+
+function knowledgeChunks(text) {
+  const normalized = String(text || '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\u0000/g, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, 300_000);
+  if (!normalized) return [];
+  const chunks = [];
+  let position = 0;
+  while (position < normalized.length && chunks.length < 600) {
+    let end = Math.min(normalized.length, position + 1200);
+    if (end < normalized.length) {
+      const newline = normalized.lastIndexOf('\n', end);
+      if (newline > position + 500) end = newline;
+    }
+    const value = normalized.slice(position, end).trim();
+    if (value) chunks.push(value);
+    if (end >= normalized.length) break;
+    position = Math.max(position + 1, end - 160);
+  }
+  return chunks;
+}
+
+function knowledgeTokens(text) {
+  const tokens = [];
+  const matches = String(text || '').toLowerCase().match(/[a-z0-9_]{2,}|[\u4e00-\u9fff]+/g) || [];
+  for (const match of matches) {
+    if (/^[a-z0-9_]+$/.test(match)) {
+      if (!KNOWLEDGE_STOPWORDS.has(match)) tokens.push(match);
+      continue;
+    }
+    if (match.length === 1) tokens.push(match);
+    for (let index = 0; index < match.length - 1; index += 1) {
+      const bigram = match.slice(index, index + 2);
+      if (!KNOWLEDGE_STOPWORDS.has(bigram)) tokens.push(bigram);
+    }
+  }
+  return tokens;
+}
+
+function knowledgeTextFor(doc) {
+  if (KNOWLEDGE_TEXT_CACHE.has(doc.id)) return KNOWLEDGE_TEXT_CACHE.get(doc.id);
+  try {
+    const text = fs.readFileSync(doc.textPath, 'utf8');
+    KNOWLEDGE_TEXT_CACHE.set(doc.id, text);
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+function knowledgeDocs(companyId, groupId) {
+  return (db.data.knowledgeDocs ?? []).filter(
+    (doc) => doc.companyId === companyId && (doc.groupId === null || doc.groupId === groupId),
+  );
+}
+
+function searchKnowledge(companyId, groupId, query, limit = 5) {
+  const queryTokens = [...new Set(knowledgeTokens(query))];
+  if (!queryTokens.length) return [];
+  const records = [];
+  for (const doc of knowledgeDocs(companyId, groupId)) {
+    const chunks = knowledgeChunks(knowledgeTextFor(doc));
+    chunks.forEach((text, index) => {
+      const tokens = knowledgeTokens(text);
+      const counts = new Map();
+      for (const token of tokens) counts.set(token, (counts.get(token) || 0) + 1);
+      records.push({ doc, index, text, tokens, counts, nameTokens: new Set(knowledgeTokens(doc.name)) });
+    });
+  }
+  if (!records.length) return [];
+  const average = records.reduce((sum, record) => sum + record.tokens.length, 0) / records.length || 1;
+  const documentFrequency = new Map();
+  for (const token of queryTokens) {
+    let count = 0;
+    for (const record of records) if (record.counts.has(token)) count += 1;
+    documentFrequency.set(token, count);
+  }
+  const k1 = 1.4;
+  const b = 0.72;
+  const scored = records.map((record) => {
+    let score = 0;
+    for (const token of queryTokens) {
+      const frequency = record.counts.get(token) || 0;
+      if (!frequency) continue;
+      const df = documentFrequency.get(token) || 0;
+      const idf = Math.log(1 + (records.length - df + 0.5) / (df + 0.5));
+      score += idf * ((frequency * (k1 + 1)) / (frequency + k1 * (1 - b + (b * record.tokens.length) / average)));
+      if (record.nameTokens.has(token)) score += 1.2;
+    }
+    return { ...record, score };
+  });
+  return scored
+    .filter((record) => record.score > 0)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, Math.max(1, Math.min(12, limit)))
+    .map((record) => ({
+      docId: record.doc.id,
+      docName: record.doc.name,
+      chunkIndex: record.index,
+      text: record.text.slice(0, 1800),
+      score: Number(record.score.toFixed(3)),
+    }));
+}
+
+function knowledgePrompt(company, group, query) {
+  const hits = searchKnowledge(company.id, group.id, query, 5);
+  if (!hits.length) return '';
+  const body = hits
+    .map((hit, index) => `[资料 ${index + 1}] 来源：${hit.docName}（片段 ${hit.chunkIndex + 1}）\n${hit.text}`)
+    .join('\n\n---\n\n');
+  return [
+    '以下是从公司知识库检索到的资料。回答时优先使用这些资料；资料不足时明确说明，不要编造。',
+    '引用资料时在句末标注来源文件名。',
+    '',
+    body.slice(0, 7000),
+  ].join('\n');
+}
+
+function saveKnowledgeDoc(company, auth, groupId, name, buffer, mime) {
+  if (buffer.length > KNOWLEDGE_MAX_BYTES) throw bad('文件超过 10MB 限制');
+  const ext = path.extname(name).toLowerCase();
+  const id = randomId('doc');
+  const dir = path.join(KNOWLEDGE_ROOT, company.id);
+  fs.mkdirSync(dir, { recursive: true });
+  const rawPath = path.join(dir, `${id}${ext || '.bin'}`);
+  const textPath = path.join(dir, `${id}.txt`);
+  fs.writeFileSync(rawPath, buffer);
+  let text;
+  try {
+    text = knowledgeExt(rawPath, name);
+  } catch (error) {
+    fs.rmSync(rawPath, { force: true });
+    throw error;
+  }
+  if (!String(text || '').trim()) {
+    fs.rmSync(rawPath, { force: true });
+    throw bad('没有从文件中提取到文本');
+  }
+  fs.writeFileSync(textPath, String(text).slice(0, 1_000_000), 'utf8');
+  const doc = {
+    id,
+    companyId: company.id,
+    groupId: groupId || null,
+    name: cleanFileName(name) || `知识文档${ext}`,
+    mime: String(mime || '').slice(0, 120),
+    size: buffer.length,
+    createdBy: auth.employee.id,
+    createdAt: now(),
+    rawPath,
+    textPath,
+    chunks: knowledgeChunks(text).length,
+  };
+  db.data.knowledgeDocs.push(doc);
+  KNOWLEDGE_TEXT_CACHE.delete(doc.id);
+  return doc;
+}
+
+function knowledgeDocView(doc) {
+  return {
+    id: doc.id,
+    groupId: doc.groupId,
+    name: doc.name,
+    mime: doc.mime,
+    size: doc.size,
+    chunks: doc.chunks,
+    createdAt: doc.createdAt,
+    createdByName: memberName(doc.createdBy),
+  };
+}
+
 function postSystemMessage(company, group, text, options = {}) {
   if (!db.group(group.id)) return;
   const message = {
@@ -512,9 +732,10 @@ async function replyInChat(company, group, trigger, config) {
       content: [
         `你是「${company.name}」企业群「${group.name}」里的 AI 助理，群成员：${members || '成员'}。`,
         '这是普通群聊，不是代码任务。请结合整个群聊历史，直接、简洁地用中文回答成员的问题。',
-        '不要在回复中声称自己修改了文件、执行了命令或创建了分支；需要改代码时，提醒成员勾选「作为 AI 任务发送」交给本机执行。',
+        '回答时优先使用系统提供的知识库检索资料，并标注来源文件名；资料不足时明确说明。',
         '不要编造没有发生的事。',
-      ].join('\n'),
+        knowledgePrompt(company, group, trigger.text),
+      ].filter(Boolean).join('\n'),
     },
   ];
   for (const entry of history) {
@@ -847,8 +1068,10 @@ class AcpHost {
       `（群聊：公司「${this.company.name}」/ 群「${this.group.name}」；成员：${members || '成员'}；发送者：${db.employee(trigger.authorId)?.name ?? '成员'}）`,
       '你是这个群的 AI 助理，运行在服务器 DSH 主机，拥有完整工具。直接回答；需要改文件/命令就执行，敏感操作会请求群审批。',
       '',
+      knowledgePrompt(this.company, this.group, text),
+      '',
       text,
-    ].join('\n');
+    ].filter(Boolean).join('\n');
     await connection.request('session/prompt', {
       sessionId: this.sessionId,
       prompt: [{ type: 'text', text: prompt }],
@@ -1760,6 +1983,70 @@ route('DELETE', /^\/api\/contacts$/, async (req) => {
   );
   if (db.data.contacts.length !== before) await db.save();
   return {};
+});
+
+route('GET', /^\/api\/knowledge$/, async (req) => {
+  const auth = authenticate(req);
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+  const groupId = url.searchParams.get('groupId') || null;
+  if (groupId) {
+    const group = db.group(groupId);
+    if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  }
+  const items = db
+    .data.knowledgeDocs
+    .filter((doc) => doc.companyId === auth.company.id && (groupId ? doc.groupId === null || doc.groupId === groupId : doc.groupId === null))
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .map(knowledgeDocView);
+  return { items };
+});
+
+route('POST', /^\/api\/knowledge$/, async (req) => {
+  const auth = authenticate(req);
+  const body = await readJsonBody(req);
+  const name = str(body.name, '文件名', { max: 160 });
+  const groupId = body.groupId ? String(body.groupId) : null;
+  if (groupId) {
+    const group = db.group(groupId);
+    if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  }
+  const raw = typeof body.dataBase64 === 'string' ? body.dataBase64 : '';
+  if (!raw) throw bad('缺少文件内容');
+  const buffer = Buffer.from(raw, 'base64');
+  if (!buffer.length) throw bad('文件为空');
+  const doc = saveKnowledgeDoc(auth.company, auth, groupId, name, buffer, body.mime);
+  await db.save();
+  return { doc: knowledgeDocView(doc) };
+});
+
+route('DELETE', /^\/api\/knowledge\/([a-z0-9_]+)$/, async (req) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/knowledge\/([a-z0-9_]+)$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const doc = db.data.knowledgeDocs.find((entry) => entry.id === match[1] && entry.companyId === auth.company.id);
+  if (!doc) throw notFound('知识文档不存在');
+  db.data.knowledgeDocs = db.data.knowledgeDocs.filter((entry) => entry.id !== doc.id);
+  KNOWLEDGE_TEXT_CACHE.delete(doc.id);
+  for (const file of [doc.rawPath, doc.textPath]) {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      // ignore
+    }
+  }
+  await db.save();
+  return { removed: true };
+});
+
+route('POST', /^\/api\/knowledge\/search$/, async (req) => {
+  const auth = authenticate(req);
+  const body = await readJsonBody(req);
+  const query = str(body.query, '检索词', { max: 1000 });
+  const groupId = body.groupId ? String(body.groupId) : null;
+  if (groupId) {
+    const group = db.group(groupId);
+    if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  }
+  return { items: searchKnowledge(auth.company.id, groupId, query, Number(body.limit) || 5) };
 });
 
 route('POST', /^\/api\/groups$/, async (req) => {
