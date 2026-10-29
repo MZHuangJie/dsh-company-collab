@@ -395,6 +395,10 @@ class CompanyHub {
     );
   }
 
+  async setGroupRepoHead(groupId, branch) {
+    return this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/repo-head`, { branch }, true, 30_000);
+  }
+
   async bindGroupRepo(groupId, localPath) {
     const group = this.groupById(groupId);
     if (!group) throw new HubError('群组不存在，请先刷新');
@@ -410,10 +414,39 @@ class CompanyHub {
       } else if (!fs.existsSync(path.join(target, '.git'))) {
         throw new HubError('选择的目录不是 Git 仓库；请选择空目录、不存在目录，或该群已有的 Git 仓库');
       } else {
-        const origin = await this.runGit(['remote', 'get-url', 'origin'], target);
-        const url = String(origin.stdout || '').trim();
+        let url = '';
+        try {
+          const origin = await this.runGit(['remote', 'get-url', 'origin'], target);
+          url = String(origin.stdout || '').trim();
+        } catch {
+          url = '';
+        }
         if (!url.endsWith(`/git/${group.repoPath}`)) {
-          throw new HubError('该目录已关联其他仓库，不能用于这个群');
+          const remoteRefs = await this.runGit(['ls-remote', repoUrl], target);
+          if (String(remoteRefs.stdout || '').trim()) {
+            throw new HubError('目标群仓库已经有内容，不能导入这个本地仓库；请选择空目录或新建仓库');
+          }
+          const branchResult = await this.runGit(['rev-parse', '--abbrev-ref', 'HEAD'], target);
+          const branch = String(branchResult.stdout || '').trim();
+          if (!branch || branch === 'HEAD') throw new HubError('本地仓库处于 detached HEAD，请先切到具体分支');
+          const remotes = String((await this.runGit(['remote'], target)).stdout || '').split(/\s+/).filter(Boolean);
+          if (remotes.includes('company-hub')) {
+            await this.runGit(['remote', 'set-url', 'company-hub', repoUrl], target);
+          } else {
+            await this.runGit(['remote', 'add', 'company-hub', repoUrl], target);
+          }
+          await this.runGit(['push', repoUrl, `HEAD:refs/heads/${branch}`], target);
+          try {
+            await this.runGit(['fetch', 'company-hub'], target);
+            await this.runGit(['branch', `--set-upstream-to=company-hub/${branch}`, branch], target);
+          } catch {
+            // Upstream is a convenience; the import itself already succeeded.
+          }
+          await this.setGroupRepoHead(group.id, branch);
+          this.state.groupRepos[group.id] = target;
+          saveState(this.state);
+          await this.configureRepoAuth(target);
+          return { path: target, action: 'imported', branch };
         }
         this.state.groupRepos[group.id] = target;
         saveState(this.state);

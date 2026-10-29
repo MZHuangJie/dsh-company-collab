@@ -133,6 +133,8 @@ window.__ModuleLoader__.load({
       'repo.button': '仓库',
       'repo.buttonHint': '绑定或同步这个群的本地 Git 仓库',
       'repo.bound': '已绑定本地仓库',
+      'repo.imported': '本地仓库已导入并绑定',
+      'repo.importFailed': '群已创建，但本地目录导入失败：{message}。可在群标题栏点仓库按钮重试。',
       'repo.cloned': '已克隆到本地',
       'repo.pulled': '已 git pull',
       'repo.pullConfirm': '本地仓库：{path}\n\n确定执行 git pull --ff-only 吗？',
@@ -384,6 +386,8 @@ window.__ModuleLoader__.load({
       'repo.button': 'Repo',
       'repo.buttonHint': 'Bind or sync this group’s local Git repository',
       'repo.bound': 'Local repository bound',
+      'repo.imported': 'Local repository imported and bound',
+      'repo.importFailed': 'Group created, but importing the local repository failed: {message}. Retry from the repository button in the group header.',
       'repo.cloned': 'Repository cloned',
       'repo.pulled': 'git pull done',
       'repo.pullConfirm': 'Local repository: {path}\n\nRun git pull --ff-only?',
@@ -1820,6 +1824,7 @@ window.__ModuleLoader__.load({
           return;
         }
         setBusy(true);
+        let pendingGroupId = '';
         try {
           const repo =
             repoMode === 'new'
@@ -1827,13 +1832,20 @@ window.__ModuleLoader__.load({
               : { mode: 'local', initReadme: false, gitignore: 'none', visibility };
           const result = await store.createGroup(name, [...selected], repo);
           const groupId = result.group?.id;
+          pendingGroupId = groupId || '';
           if (repoMode === 'local' && groupId && localPath.trim()) {
             await store.bindRepo(groupId, localPath.trim());
           }
           onClose();
           if (groupId) await store.openGroup(groupId);
         } catch (failure) {
-          setError(String(failure.message || failure));
+          if (pendingGroupId) {
+            store.notify('error', t('repo.importFailed', { message: String(failure.message || failure) }));
+            onClose();
+            await store.openGroup(pendingGroupId);
+          } else {
+            setError(String(failure.message || failure));
+          }
         } finally {
           setBusy(false);
         }
@@ -3240,7 +3252,14 @@ window.__ModuleLoader__.load({
                     const picked = await picker.pickDirectory();
                     if (!picked) return;
                     const result = await store.bindRepo(group.id, picked);
-                    store.notify('ok', result.action === 'cloned' ? t('repo.cloned') : t('repo.bound'));
+                    store.notify(
+                      'ok',
+                      result.action === 'cloned'
+                        ? t('repo.cloned')
+                        : result.action === 'imported'
+                          ? t('repo.imported')
+                          : t('repo.bound'),
+                    );
                   } catch (failure) {
                     store.notify('error', t('notice.error', { message: String(failure.message || failure) }));
                   }

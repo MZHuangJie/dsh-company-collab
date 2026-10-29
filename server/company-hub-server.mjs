@@ -2505,6 +2505,22 @@ route('POST', /^\/api\/knowledge\/search$/, async (req) => {
   return { items: await searchKnowledge(auth.company.id, groupId, query, Number(body.limit) || 5) };
 });
 
+route('POST', /^\/api\/groups\/([a-z0-9_]+)\/repo-head$/, async (req) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/repo-head$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const group = db.group(match[1]);
+  if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  const body = await readJsonBody(req);
+  const branch = str(body.branch, '分支名', { max: 80 });
+  if (!/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch)) throw bad('分支名不合法');
+  const repoDir = groupRepoPath(group.repoPath || groupRepoRelative(group.companyId, group.id));
+  const exists = spawnSync('git', ['show-ref', '--verify', `refs/heads/${branch}`], { cwd: repoDir, encoding: 'utf8' });
+  if (exists.status !== 0) throw bad('远程仓库没有这个分支');
+  const result = spawnSync('git', ['symbolic-ref', 'HEAD', `refs/heads/${branch}`], { cwd: repoDir, encoding: 'utf8' });
+  if (result.status !== 0) throw bad(result.stderr || '设置默认分支失败');
+  return { branch };
+});
+
 route('POST', /^\/api\/groups$/, async (req) => {
   const auth = authenticate(req);
   const body = await readJsonBody(req);
