@@ -3149,7 +3149,6 @@ window.__ModuleLoader__.load({
         try {
           await store.send(group.id, text);
           setDraft('');
-          store.notify('ok', t('notice.sent'));
         } catch (failure) {
           store.notify('error', t('notice.error', { message: String(failure.message || failure) }));
         } finally {
