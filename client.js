@@ -102,7 +102,8 @@ window.__ModuleLoader__.load({
       'chat.noMessages': '还没有消息，先说点什么吧。',
       'run.running': '正在处理',
       'run.finished': '已完成，过程已折叠',
-      'run.finishedOpen': '已完成',
+      'run.finishedShort': '已完成',
+      'run.used': '用时 {duration}',
       'run.steps': '步',
       'run.failed': '失败',
       'run.tool.bash': '运行命令',
@@ -303,7 +304,8 @@ window.__ModuleLoader__.load({
       'chat.noMessages': 'No messages yet — say hello.',
       'run.running': 'Working',
       'run.finished': 'Done — process collapsed',
-      'run.finishedOpen': 'Done',
+      'run.finishedShort': 'Done',
+      'run.used': '{duration}',
       'run.steps': 'steps',
       'run.failed': 'Failed',
       'run.tool.bash': 'Run command',
@@ -487,6 +489,9 @@ window.__ModuleLoader__.load({
 .dcc-runHead{display:flex;align-items:center;gap:6px;min-height:26px;padding:0 2px;font-size:11px;color:var(--dsw-alias-label-secondary);cursor:pointer;user-select:none}
 .dcc-runHead:hover{background:transparent;color:var(--dsw-alias-label-primary)}
 .dcc-runChevron{font-size:10px;color:var(--dsw-alias-label-tertiary);width:10px}
+.dcc-runMark{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;color:var(--dsw-alias-state-success-primary,var(--dsw-alias-brand-primary));background:color-mix(in srgb,var(--dsw-alias-state-success-primary,var(--dsw-alias-brand-primary)) 12%,transparent)}
+.dcc-runLabel{font-weight:500;color:var(--dsw-alias-label-secondary)}
+.dcc-runMeta{font-size:10.5px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
 .dcc-runCount{margin-left:auto;font-size:10px;color:var(--dsw-alias-label-tertiary)}
 .dcc-runDuration{font-size:10px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
 .dcc-conv{display:flex;flex-direction:column;gap:18px;min-width:0}
@@ -2100,6 +2105,7 @@ window.__ModuleLoader__.load({
             className: 'dcc-runHead',
             role: 'button',
             tabIndex: 0,
+            'aria-expanded': open ? 'true' : 'false',
             onClick: () => setOpen((value) => !value),
             onKeyDown: (event) => {
               if (event.key === 'Enter' || event.key === ' ') {
@@ -2109,9 +2115,9 @@ window.__ModuleLoader__.load({
             },
           },
           h('span', { className: 'dcc-runChevron' }, open ? '▾' : '▸'),
-          finished ? h(Icon, { name: 'check', size: 12 }) : null,
-          h('span', {}, !finished ? t('run.running') : open ? t('run.finishedOpen') : t('run.finished')),
-          duration ? h('span', { className: 'dcc-runDuration' }, duration) : null,
+          finished ? h('span', { className: 'dcc-runMark' }, h(Icon, { name: 'check', size: 11 })) : null,
+          h('span', { className: 'dcc-runLabel' }, !finished ? t('run.running') : t('run.finishedShort')),
+          duration ? h('span', { className: 'dcc-runMeta' }, t('run.used', { duration })) : null,
           h('span', { className: 'dcc-runCount' }, `${count} ${t('run.steps')}`),
         ),
         open
