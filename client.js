@@ -1,13 +1,13 @@
 window.__ModuleLoader__.load({
-  id: '@local/dsh-company-collab',
+  id: 'dsh-company-collab',
   factory(require) {
     const React = require('react');
     const h = React.createElement;
 
-    const PKG = '@local/dsh-company-collab';
+    const PKG = 'dsh-company-collab';
     const NS = 'companyCollab';
     const PANEL_ID = 'company-collab-panel';
-    const TAB_ID = '@local/dsh-company-collab/tab';
+    const TAB_ID = 'dsh-company-collab/tab';
     const TAB_KIND = 'company-collab';
     const API = '/company-collab/api';
 
