@@ -206,6 +206,49 @@ class CompanyHub {
     return json;
   }
 
+  async pipeEvents(groupId, req, res) {
+    const base = this.state.serverUrl;
+    if (!base) throw new HubError('尚未配置服务器');
+    if (!this.state.identity) throw new HubError('尚未登录公司账号');
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    req.on('close', abort);
+    let response;
+    try {
+      response = await fetch(`${base}/api/groups/${encodeURIComponent(groupId)}/events`, {
+        headers: { accept: 'text/event-stream', authorization: `Bearer ${this.state.identity.token}` },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      req.off('close', abort);
+      throw new HubError(`事件流连接失败：${textOf(error)}`);
+    }
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => '');
+      req.off('close', abort);
+      throw new HubError(`事件流失败（HTTP ${response.status}）${text ? `：${text.slice(0, 200)}` : ''}`, response.status);
+    }
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    const reader = response.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!res.write(Buffer.from(value))) await new Promise((resolve) => res.once('drain', resolve));
+        if (res.writableEnded) break;
+      }
+    } finally {
+      req.off('close', abort);
+      reader.cancel().catch(() => {});
+      if (!res.writableEnded) res.end();
+    }
+  }
+
   // ---- account
 
   async createCompany(companyName, employeeName) {
@@ -661,6 +704,11 @@ function handleApi(req, res) {
   const run = async () => {
     const body = method === 'POST' ? await readBody(req) : {};
     if (!hub) throw new HubError('插件尚未就绪');
+    const eventsMatch = method === 'GET' ? /^groups\/([a-z0-9_]+)\/events$/.exec(action) : null;
+    if (eventsMatch) {
+      await hub.pipeEvents(eventsMatch[1], req, res);
+      return;
+    }
     switch (`${method} ${action}`) {
       case 'GET state':
         await hub.refreshAccount(false).catch(() => {});
@@ -737,8 +785,15 @@ function handleApi(req, res) {
     }
   };
   run()
-    .then((payload) => sendJson(res, 200, payload))
+    .then((payload) => {
+      if (res.headersSent || res.writableEnded) return;
+      sendJson(res, 200, payload);
+    })
     .catch((error) => {
+      if (res.headersSent || res.writableEnded) {
+        if (!res.writableEnded) res.end();
+        return;
+      }
       const status = error instanceof HubError ? error.status || 400 : 500;
       console.error('[company-collab] 接口失败', error);
       sendJson(res, status, { ok: false, error: textOf(error) });

@@ -113,6 +113,7 @@ window.__ModuleLoader__.load({
       'run.tool.grep': '搜索内容',
       'run.tool.webSearch': '联网搜索',
       'run.tool.default': '工具调用',
+      'run.ai': 'AI 助理',
       'task.title': 'AI 任务',
       'task.empty': '暂无待处理的 AI 任务',
       'task.by': '{name} 指派',
@@ -306,6 +307,7 @@ window.__ModuleLoader__.load({
       'run.tool.grep': 'Search content',
       'run.tool.webSearch': 'Web search',
       'run.tool.default': 'Tool call',
+      'run.ai': 'AI assistant',
       'task.title': 'AI tasks',
       'task.empty': 'No pending AI tasks',
       'task.by': 'assigned by {name}',
@@ -474,6 +476,8 @@ window.__ModuleLoader__.load({
 .dcc-runCount{margin-left:auto;font-size:10px;color:var(--dsw-alias-label-tertiary)}
 .dcc-runDuration{font-size:10px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
 .dcc-conv{display:flex;flex-direction:column;gap:14px;min-width:0}
+.dcc-live{display:flex;flex-direction:column;gap:10px}
+.dcc-liveAnswer{display:flex;flex-direction:column;gap:4px;padding-left:0}
 .dcc-runBody{display:flex;flex-direction:column;gap:4px;padding:2px 9px 8px;border-top:.5px solid var(--dsw-alias-border-l1)}
 .dcc-runItem{font-size:11px;line-height:1.55;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}
 .dcc-runItem[data-strong]{color:var(--dsw-alias-label-primary)}
@@ -922,14 +926,12 @@ window.__ModuleLoader__.load({
 
       function start() {
         refresh();
-        timer = setInterval(tick, 1500);
         const onVisible = () => {
           if (!document.hidden) tick();
         };
         document.addEventListener('visibilitychange', onVisible);
         window.addEventListener('focus', onVisible);
         return () => {
-          clearInterval(timer);
           clearTimeout(noticeTimer);
           document.removeEventListener('visibilitychange', onVisible);
           window.removeEventListener('focus', onVisible);
@@ -942,6 +944,20 @@ window.__ModuleLoader__.load({
         refresh,
         notify,
         start,
+        mergeMessage(groupId, message) {
+          const current = snapshot.messages[groupId] ?? { items: [], seq: 0, loading: false, error: '' };
+          const items = current.items.slice();
+          const index = items.findIndex((entry) => entry.id === message.id);
+          if (index >= 0) items[index] = message;
+          else items.push(message);
+          items.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+          publish({
+            messages: {
+              ...snapshot.messages,
+              [groupId]: { ...current, items, seq: Math.max(current.seq || 0, message.seq || 0) },
+            },
+          });
+        },
         configureServer: (serverUrl) => act('/settings', { serverUrl }),
         createCompany: (companyName, employeeName) => act('/setup/company', { companyName, employeeName }),
         login: (companyId, employeeName, accessCode) => act('/setup/login', { companyId, employeeName, accessCode }),
@@ -2135,6 +2151,38 @@ window.__ModuleLoader__.load({
       return rows;
     }
 
+    function LiveRun({ t, live }) {
+      const messages = (live.activities ?? []).map((activity, index) => ({
+        id: `live-activity-${index}`,
+        kind: 'activity',
+        runId: live.runId,
+        activity,
+        createdAt: live.startedAt ?? Date.now(),
+      }));
+      if (live.thought) {
+        messages.unshift({
+          id: 'live-thought',
+          kind: 'activity',
+          runId: live.runId,
+          activity: { type: 'thought', title: '思考', detail: live.thought, status: 'running' },
+          createdAt: live.startedAt ?? Date.now(),
+        });
+      }
+      return h(
+        'div',
+        { className: 'dcc-live' },
+        messages.length ? h(RunActivity, { t, messages, finished: false }) : null,
+        live.answer
+          ? h(
+              'div',
+              { className: 'dcc-liveAnswer' },
+              h('div', { className: 'dcc-msgHead' }, h('span', { className: 'dcc-msgName' }, t('run.ai')), h(AiTag, { t })),
+              h('div', { className: 'dcc-msgText' }, live.answer),
+            )
+          : null,
+      );
+    }
+
     function ChatPane({ t, snap, onNewGroup }) {
       const store = shared.store;
       const data = snap.data;
@@ -2145,8 +2193,87 @@ window.__ModuleLoader__.load({
       const [asTask, setAsTask] = React.useState(false);
       const [sending, setSending] = React.useState(false);
       const [mention, setMention] = React.useState(null);
+      const [live, setLive] = React.useState(null);
       const scroller = React.useRef(null);
       const textarea = React.useRef(null);
+
+      React.useEffect(() => {
+        if (!groupId) return undefined;
+        let stopped = false;
+        let retry = null;
+        const controller = new AbortController();
+        const applyRun = (event) => {
+          setLive((previous) => {
+            if (event.kind === 'start') return { runId: event.runId, thought: '', answer: '', activities: [], startedAt: Date.now() };
+            if (!previous || previous.runId !== event.runId) return previous;
+            if (event.kind === 'thought_delta') return { ...previous, thought: `${previous.thought}${event.text || ''}` };
+            if (event.kind === 'answer_delta') return { ...previous, answer: `${previous.answer}${event.text || ''}` };
+            if (event.kind === 'activity' && event.activity) {
+              const activities = previous.activities.slice();
+              const index = event.activity.toolCallId
+                ? activities.findIndex((entry) => entry.toolCallId === event.activity.toolCallId)
+                : -1;
+              if (index >= 0) activities[index] = { ...activities[index], ...event.activity };
+              else activities.push(event.activity);
+              return { ...previous, activities };
+            }
+            if (event.kind === 'done') return null;
+            return previous;
+          });
+        };
+        const connect = async () => {
+          try {
+            const response = await fetch(`${API}/groups/${encodeURIComponent(groupId)}/events`, {
+              headers: { accept: 'text/event-stream' },
+              signal: controller.signal,
+            });
+            if (!response.ok || !response.body) throw new Error(`events ${response.status}`);
+            store.refreshMessages(groupId, true).catch(() => {});
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done || stopped) break;
+              buffer += decoder.decode(value, { stream: true });
+              let boundary;
+              while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+                const block = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                let eventName = 'message';
+                const dataLines = [];
+                for (const line of block.split('\n')) {
+                  if (line.startsWith('event:')) eventName = line.slice(6).trim();
+                  else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+                }
+                if (!dataLines.length) continue;
+                let payload;
+                try {
+                  payload = JSON.parse(dataLines.join('\n'));
+                } catch {
+                  continue;
+                }
+                if (eventName === 'run') {
+                  applyRun(payload);
+                  if (payload.kind === 'done') store.refreshMessages(groupId, true).catch(() => {});
+                } else if (eventName === 'message' && payload.message) {
+                  store.mergeMessage(groupId, payload.message);
+                }
+              }
+            }
+          } catch (error) {
+            if (stopped || controller.signal.aborted) return;
+          }
+          if (!stopped) retry = setTimeout(connect, 2000);
+        };
+        connect();
+        return () => {
+          stopped = true;
+          if (retry) clearTimeout(retry);
+          controller.abort();
+          setLive(null);
+        };
+      }, [groupId]);
 
       const mentionCandidates = React.useMemo(() => {
         const members = group?.members ?? [];
@@ -2322,8 +2449,8 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'dcc-messages dcc-scrollThin', ref: scroller },
           bucket.error ? h(ErrorLine, { text: bucket.error }) : null,
-          bucket.items.length
-            ? h(ConversationView, { t, items: bucket.items })
+          bucket.items.length || live
+            ? h(React.Fragment, null, h(ConversationView, { t, items: bucket.items }), live ? h(LiveRun, { t, live }) : null)
             : h(
                 'div',
                 { className: 'dcc-empty', style: { height: 'auto', paddingTop: 40 } },

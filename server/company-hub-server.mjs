@@ -409,9 +409,60 @@ function scheduleChatReply(company, group, trigger) {
   CHAT_QUEUES.set(group.id, next);
 }
 
+const GROUP_STREAMS = new Map();
+
+function broadcastGroupEvent(groupId, type, payload) {
+  const clients = GROUP_STREAMS.get(groupId);
+  if (!clients?.size) return;
+  const body = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const res of clients) {
+    try {
+      res.write(body);
+    } catch {
+      clients.delete(res);
+    }
+  }
+}
+
+function serveGroupEvents(req, res, url) {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/events$/.exec(url.pathname);
+  const group = match ? db.group(match[1]) : null;
+  if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) {
+    throw notFound('群组不存在');
+  }
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  res.write(`retry: 2000\nevent: hello\ndata: ${JSON.stringify({ groupId: group.id, seq: group.seq })}\n\n`);
+  let clients = GROUP_STREAMS.get(group.id);
+  if (!clients) {
+    clients = new Set();
+    GROUP_STREAMS.set(group.id, clients);
+  }
+  clients.add(res);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 15_000);
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    clients.delete(res);
+    if (!clients.size && GROUP_STREAMS.get(group.id) === clients) GROUP_STREAMS.delete(group.id);
+  };
+  req.on('close', cleanup);
+  res.on('close', cleanup);
+}
+
 function postSystemMessage(company, group, text, options = {}) {
   if (!db.group(group.id)) return;
-  db.data.messages.push({
+  const message = {
     id: randomId('msg'),
     companyId: company.id,
     groupId: group.id,
@@ -422,7 +473,11 @@ function postSystemMessage(company, group, text, options = {}) {
     runId: options.runId,
     activity: options.activity,
     createdAt: now(),
-  });
+  };
+  db.data.messages.push(message);
+  if (message.kind !== 'activity') {
+    broadcastGroupEvent(group.id, 'message', { message: messageView(message) });
+  }
   db.save().catch((error) => console.error('[company-hub] 系统消息保存失败', error));
 }
 
@@ -761,6 +816,7 @@ class AcpHost {
   async run(text, trigger) {
     const connection = await this.ensure();
     this.runState = { runId: randomId('run'), thought: '', answer: '', triggeredBy: trigger, tools: new Map() };
+    broadcastGroupEvent(this.group.id, 'run', { runId: this.runState.runId, kind: 'start' });
     const members = db
       .companyEmployees(this.company.id)
       .filter((entry) => !entry.isAi)
@@ -780,7 +836,7 @@ class AcpHost {
     this.runState = null;
     if (!state || !db.group(this.group.id)) return;
     const answer = state.answer.trim() || '（AI 没有返回文本内容）';
-    db.data.messages.push({
+    const finalMessage = {
       id: randomId('msg'),
       companyId: this.company.id,
       groupId: this.group.id,
@@ -790,8 +846,11 @@ class AcpHost {
       kind: 'text',
       runId: state.runId,
       createdAt: now(),
-    });
+    };
+    db.data.messages.push(finalMessage);
     await db.save();
+    broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'done' });
+    broadcastGroupEvent(this.group.id, 'message', { message: messageView(finalMessage) });
   }
 
   onUpdate(params) {
@@ -800,9 +859,11 @@ class AcpHost {
     if (!update || !state) return;
     if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
       state.answer += update.content.text;
+      broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'answer_delta', text: update.content.text });
       return;
     }
     if (update.sessionUpdate === 'agent_thought_chunk' && update.content?.type === 'text') {
+      broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'thought_delta', text: update.content.text });
       if (!state.thought) {
         postSystemMessage(this.company, this.group, '💭 思考', {
           kind: 'activity',
@@ -817,17 +878,19 @@ class AcpHost {
     if (update.sessionUpdate === 'tool_call') {
       const title = update.title || update.name || '工具调用';
       state.tools.set(update.toolCallId, { title, rawInput: update.rawInput });
+      const toolActivity = {
+        type: 'tool',
+        title: clip(title, 200),
+        detail: update.rawInput === undefined ? '' : clip(update.rawInput, 400),
+        status: 'running',
+        toolCallId: update.toolCallId,
+      };
       postSystemMessage(this.company, this.group, `🔧 ${clip(title, 200)}`, {
         kind: 'activity',
         runId: state.runId,
-        activity: {
-          type: 'tool',
-          title: clip(title, 200),
-          detail: update.rawInput === undefined ? '' : clip(update.rawInput, 400),
-          status: 'running',
-          toolCallId: update.toolCallId,
-        },
+        activity: toolActivity,
       });
+      broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'activity', activity: toolActivity });
       return;
     }
     if (update.sessionUpdate === 'tool_call_update' && (update.status === 'completed' || update.status === 'failed')) {
@@ -835,27 +898,31 @@ class AcpHost {
         ? update.content.map((item) => (item.type === 'content' && item.content?.type === 'text' ? item.content.text : '')).filter(Boolean).join('\n')
         : '';
       const title = update.title || state.tools.get(update.toolCallId)?.title || update.toolCallId || '工具调用';
+      const toolResult = {
+        type: 'tool',
+        title: clip(title, 200),
+        detail: clip(resultText, 600),
+        status: update.status === 'completed' ? 'completed' : 'failed',
+        toolCallId: update.toolCallId,
+      };
       postSystemMessage(this.company, this.group, `${update.status === 'completed' ? '✅' : '⚠️'} ${clip(title, 200)}`, {
         kind: 'activity',
         runId: state.runId,
-        activity: {
-          type: 'tool',
-          title: clip(title, 200),
-          detail: clip(resultText, 600),
-          status: update.status === 'completed' ? 'completed' : 'failed',
-          toolCallId: update.toolCallId,
-        },
+        activity: toolResult,
       });
+      broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'activity', activity: toolResult });
       return;
     }
     if (update.sessionUpdate === 'plan' && Array.isArray(update.entries)) {
       const lines = update.entries.map((entry) => `- [${entry.status}] ${entry.content}`).join('\n');
       if (lines) {
+        const planActivity = { type: 'plan', title: '计划', detail: clip(lines, 800), status: 'done' };
         postSystemMessage(this.company, this.group, '📋 计划', {
           kind: 'activity',
           runId: state.runId,
-          activity: { type: 'plan', title: '计划', detail: clip(lines, 800), status: 'done' },
+          activity: planActivity,
         });
+        broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'activity', activity: planActivity });
       }
     }
   }
@@ -1811,6 +1878,7 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
     }
   }
   await db.save();
+  broadcastGroupEvent(group.id, 'message', { message: messageView(message) });
   if (mentioned && !wantsTask) {
     scheduleChatReply(auth.company, group, message);
   }
@@ -1896,6 +1964,15 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname;
   if (pathname.startsWith('/git/')) {
     serveGit(req, res, url);
+    return;
+  }
+  if (req.method === 'GET' && /^\/api\/groups\/[a-z0-9_]+\/events$/.test(pathname)) {
+    try {
+      serveGroupEvents(req, res, url);
+    } catch (error) {
+      if (!res.headersSent) sendError(res, error);
+      else res.end();
+    }
     return;
   }
   try {
