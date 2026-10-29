@@ -1491,6 +1491,25 @@ class AcpHost {
     });
   }
 
+  cancel() {
+    const state = this.runState;
+    if (!state) return false;
+    state.cancelled = true;
+    if (state.pendingApproval && state.pendingApproval.status === 'pending') {
+      state.pendingApproval.status = 'rejected';
+      state.pendingApproval.decidedAt = now();
+    }
+    if (this.connection && this.sessionId) {
+      try {
+        this.connection.send({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: this.sessionId } });
+      } catch {
+        // The prompt will finish through its normal error path.
+      }
+    }
+    broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'cancelled' });
+    return true;
+  }
+
   prompt(text, trigger) {
     this.queue = this.queue
       .then(() => this.run(text, trigger))
@@ -1544,14 +1563,21 @@ class AcpHost {
       }
     }
     if (attachmentText.length) promptBlocks[0].text += `\n\n${attachmentText.join('\n\n---\n\n')}`;
-    await connection.request('session/prompt', {
-      sessionId: this.sessionId,
-      prompt: promptBlocks,
-    }, 0);
+    try {
+      await connection.request('session/prompt', {
+        sessionId: this.sessionId,
+        prompt: promptBlocks,
+      }, 0);
+    } catch (error) {
+      if (!this.runState?.cancelled) throw error;
+    }
     const state = this.runState;
     this.runState = null;
     if (!state || !db.group(this.group.id)) return;
-    const answer = state.answer.trim() || '（AI 没有返回文本内容）';
+    const partial = state.answer.trim();
+    const answer = state.cancelled
+      ? `${partial || '（已中断）'}${partial ? '\n\n（已中断）' : ''}`
+      : partial || '（AI 没有返回文本内容）';
     const finalMessage = {
       id: randomId('msg'),
       companyId: this.company.id,
@@ -1671,7 +1697,9 @@ class AcpHost {
     const reasonSource = tool.rawInput ?? known.rawInput;
     const reason = reasonSource === undefined ? '' : clip(reasonSource, 500);
     const approval = createApprovalRecord(this.company, this.group, state.triggeredBy, title, reason, tool.toolCallId);
+    state.pendingApproval = approval;
     const outcome = await waitApprovalDecision(approval);
+    state.pendingApproval = null;
     await db.save().catch(() => {});
     const options = Array.isArray(params?.options) ? params.options : [];
     if (outcome !== 'allowed-once') {
@@ -2781,6 +2809,15 @@ route('GET', /^\/api\/groups\/([a-z0-9_]+)\/attachments\/([a-z0-9_]+)$/, async (
     'cache-control': 'private, max-age=3600',
   });
   fs.createReadStream(entry.path).pipe(res);
+});
+
+route('POST', /^\/api\/groups\/([a-z0-9_]+)\/ai\/cancel$/, async (req) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/ai\/cancel$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const group = db.group(match[1]);
+  if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  const host = ACP_HOSTS.get(group.id);
+  return { cancelled: Boolean(host?.cancel()) };
 });
 
 route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {

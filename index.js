@@ -701,6 +701,10 @@ class CompanyHub {
     return { message: result.message, task: result.task, state: this.snapshot() };
   }
 
+  async cancelAi(groupId) {
+    return this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/ai/cancel`, {});
+  }
+
   async markRead(groupId, seq) {
     await this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/read`, { seq: Number(seq) || 0 });
     if (this.remote) {
@@ -915,6 +919,8 @@ function handleApi(req, res) {
         const attachment = await hub.uploadAttachment(body.groupId, body.name, body.dataBase64, body.mime);
         return { ok: true, attachment };
       }
+      case 'POST ai/cancel':
+        return hub.cancelAi(body.groupId).then((result) => ({ ok: true, ...result }));
       case 'GET attachment':
         await hub.attachmentResponse(url.searchParams.get('groupId') ?? '', url.searchParams.get('id') ?? '', res);
         return {};

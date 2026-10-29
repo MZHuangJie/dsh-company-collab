@@ -112,6 +112,8 @@ window.__ModuleLoader__.load({
       'run.finishedShort': '已完成',
       'run.used': '用时 {duration}',
       'run.exploring': '正在深度探索中',
+      'run.stop': '停止',
+      'run.stopping': '正在停止…',
       'run.steps': '步',
       'run.failed': '失败',
       'run.tool.bash': '运行命令',
@@ -373,6 +375,8 @@ window.__ModuleLoader__.load({
       'run.finishedShort': 'Done',
       'run.used': '{duration}',
       'run.exploring': 'Deep diving',
+      'run.stop': 'Stop',
+      'run.stopping': 'Stopping…',
       'run.steps': 'steps',
       'run.failed': 'Failed',
       'run.tool.bash': 'Run command',
@@ -674,6 +678,9 @@ window.__ModuleLoader__.load({
 .dcc-workingBar{flex:none;display:flex;align-items:center;gap:7px;padding:4px 18px 0;font-size:11px;color:var(--dsw-alias-brand-primary)}
 .dcc-workingPulse{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-brand-primary);animation:dcc-pulse 1.4s ease-in-out infinite}
 .dcc-workingTime{margin-left:auto;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
+.dcc-stopBtn{display:inline-flex;align-items:center;gap:4px;border:.5px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);border-radius:999px;height:22px;padding:0 8px;font:inherit;font-size:11px;cursor:pointer}
+.dcc-stopBtn:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dcc-stopBtn:disabled{opacity:.6;cursor:default}
 @keyframes dcc-pulse{0%,100%{opacity:.35;transform:scale(.85)}50%{opacity:1;transform:scale(1)}}
 .dcc-composer{flex:none;padding:10px 16px 16px;display:flex;flex-direction:column;gap:6px}
 .dcc-composerBox{position:relative;display:flex;flex-direction:column;border:.5px solid var(--dsw-alias-border-l2);border-radius:14px;background:var(--dsw-alias-bg-layer-1);padding:9px 10px 7px;transition:border-color .12s}
@@ -1366,6 +1373,7 @@ window.__ModuleLoader__.load({
           act('/attachments', { groupId, name, dataBase64, mime }).then((json) => json.attachment),
         attachmentUrl: (groupId, attachmentId) =>
           `/company-collab/api/attachment?groupId=${encodeURIComponent(groupId)}&id=${encodeURIComponent(attachmentId)}`,
+        cancelAi: (groupId) => act('/ai/cancel', { groupId }),
         claimTask: (taskId) => act('/tasks/claim', { taskId }),
         completeTask: (taskId, note) => act('/tasks/complete', { taskId, note, asAi: true }),
         refreshMessages: (groupId, reset) => loadMessages(groupId, reset),
@@ -2633,18 +2641,36 @@ window.__ModuleLoader__.load({
       return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`;
     }
 
-    function WorkingStatus({ t, startedAt }) {
+    function WorkingStatus({ t, startedAt, onStop }) {
       const [now, setNow] = React.useState(Date.now());
+      const [stopping, setStopping] = React.useState(false);
       React.useEffect(() => {
         const timer = setInterval(() => setNow(Date.now()), 1000);
         return () => clearInterval(timer);
       }, []);
+      const stop = async () => {
+        if (!onStop || stopping) return;
+        setStopping(true);
+        try {
+          await onStop();
+        } finally {
+          setStopping(false);
+        }
+      };
       return h(
         'div',
         { className: 'dcc-workingBar' },
         h('span', { className: 'dcc-workingPulse' }),
         h('span', { className: 'dcc-workingLabel' }, t('run.exploring')),
         h('span', { className: 'dcc-workingTime' }, formatDuration(now - startedAt)),
+        onStop
+          ? h(
+              'button',
+              { type: 'button', className: 'dcc-stopBtn', disabled: stopping, onClick: stop },
+              h(Icon, { name: 'close', size: 11 }),
+              stopping ? t('run.stopping') : t('run.stop'),
+            )
+          : null,
       );
     }
 
@@ -3468,7 +3494,7 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'dcc-emptyDesc' }, t('chat.noMessages')),
               ),
         ),
-        live ? h(WorkingStatus, { t, startedAt: live.startedAt }) : null,
+        live ? h(WorkingStatus, { t, startedAt: live.startedAt, onStop: () => store.cancelAi(group.id) }) : null,
         h(
           'div',
           {
