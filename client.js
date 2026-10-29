@@ -511,6 +511,9 @@ window.__ModuleLoader__.load({
 .dcc-stepIcon{flex:none;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-tertiary);background:transparent}
 .dcc-step[data-type="thought"] .dcc-stepIcon{color:var(--dsw-alias-brand-primary)}
 .dcc-step[data-type="tool"] .dcc-stepIcon{color:var(--dsw-alias-label-tertiary)}
+.dcc-step[data-type="thought"] .dcc-stepBody{border-left:2px solid var(--dsw-alias-border-l1);padding-left:8px}
+.dcc-step[data-type="thought"] .dcc-stepTitle{font-weight:400;color:var(--dsw-alias-label-secondary)}
+.dcc-step[data-type="thought"] .dcc-stepDetail{background:transparent;border:0;border-radius:0;padding:0;max-height:240px;font-family:inherit;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-tertiary)}
 .dcc-step[data-status="completed"] .dcc-stepIcon{color:var(--dsw-alias-state-success-primary,var(--dsw-alias-brand-primary))}
 .dcc-step[data-status="failed"] .dcc-stepIcon{color:var(--dsw-alias-state-warn-primary)}
 .dcc-stepBody{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
@@ -2106,6 +2109,7 @@ window.__ModuleLoader__.load({
             },
           },
           h('span', { className: 'dcc-runChevron' }, open ? '▾' : '▸'),
+          finished ? h(Icon, { name: 'check', size: 12 }) : null,
           h('span', {}, !finished ? t('run.running') : open ? t('run.finishedOpen') : t('run.finished')),
           duration ? h('span', { className: 'dcc-runDuration' }, duration) : null,
           h('span', { className: 'dcc-runCount' }, `${count} ${t('run.steps')}`),
