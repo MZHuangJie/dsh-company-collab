@@ -2288,7 +2288,7 @@ window.__ModuleLoader__.load({
     }
 
     function RunActivity({ t, messages, finished, finishedAt }) {
-      const [open, setOpen] = React.useState(!finished);
+      const [open, setOpen] = React.useState(false);
       React.useEffect(() => {
         if (finished) setOpen(false);
       }, [finished]);
@@ -2570,8 +2570,12 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         if (!scroller.current) return;
-        scroller.current.scrollTop = scroller.current.scrollHeight;
-      }, [bucket.items.length, groupId]);
+        const element = scroller.current;
+        const frame = requestAnimationFrame(() => {
+          element.scrollTop = element.scrollHeight;
+        });
+        return () => cancelAnimationFrame(frame);
+      }, [bucket.items.length, groupId, live?.answer?.length, live?.thought?.length, live?.activities?.length]);
 
       React.useEffect(() => {
         setDraft('');
