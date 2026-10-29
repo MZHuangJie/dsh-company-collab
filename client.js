@@ -116,6 +116,8 @@ window.__ModuleLoader__.load({
       'run.tool.grep': '搜索内容',
       'run.tool.webSearch': '联网搜索',
       'run.tool.default': '工具调用',
+      'run.executed': '执行了命令',
+      'run.executing': '正在运行命令',
       'run.ai': 'AI 助理',
       'approval.title': 'AI 请求执行「{tool}」',
       'approval.allow': '允许',
@@ -369,6 +371,8 @@ window.__ModuleLoader__.load({
       'run.tool.grep': 'Search content',
       'run.tool.webSearch': 'Web search',
       'run.tool.default': 'Tool call',
+      'run.executed': 'Executed commands',
+      'run.executing': 'Running commands',
       'run.ai': 'AI assistant',
       'approval.title': 'AI requests to run "{tool}"',
       'approval.allow': 'Allow',
@@ -644,6 +648,7 @@ window.__ModuleLoader__.load({
 .dcc-stepHead{display:flex;align-items:baseline;gap:7px;min-width:0}
 .dcc-stepHead[role=button]{cursor:pointer}
 .dcc-stepChevron{flex:none;font-size:9px;color:var(--dsw-alias-label-tertiary);width:9px}
+.dcc-stepSummary{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:11px}
 .dcc-stepTitle{font-size:12px;font-weight:500;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcc-stepStatus{flex:none;font-size:10px;color:var(--dsw-alias-label-tertiary)}
 .dcc-stepStatus[data-failed]{color:var(--dsw-alias-state-warn-primary)}
@@ -2584,7 +2589,11 @@ window.__ModuleLoader__.load({
     function RunStep({ t, step }) {
       const [open, setOpen] = React.useState(false);
       const isTool = step.type === 'tool';
-      const canFold = isTool && Boolean(step.detail || step.result);
+      const canFold = Boolean(step.detail || step.result);
+      const detailText = String(step.detail || '').trim();
+      const summary = isTool
+        ? String(step.description || detailText.split(/\r?\n/)[0] || '').replace(/\s+/g, ' ').slice(0, 160)
+        : detailText.split(/\r?\n/).find((line) => line.trim())?.trim().slice(0, 120) || '';
       const toggle = () => {
         if (canFold) setOpen((value) => !value);
       };
@@ -2622,20 +2631,21 @@ window.__ModuleLoader__.load({
             },
             canFold ? h('span', { className: 'dcc-stepChevron' }, open ? '▾' : '▸') : null,
             h('span', { className: 'dcc-stepTitle' }, isTool ? toolTitle(t, step) : step.title || '过程'),
+            summary ? h('span', { className: 'dcc-stepSummary' }, `· ${summary}`) : null,
             step.status === 'running'
               ? h('span', { className: 'dcc-stepStatus' }, t('run.running'))
               : step.status === 'failed'
                 ? h('span', { className: 'dcc-stepStatus', 'data-failed': '' }, t('run.failed'))
                 : null,
           ),
-          isTool && !open
-            ? null
-            : h(
+          open
+            ? h(
                 React.Fragment,
                 null,
                 step.detail ? h('div', { className: 'dcc-stepDetail' }, step.detail) : null,
                 step.result ? h('div', { className: 'dcc-stepResult' }, step.result) : null,
-              ),
+              )
+            : null,
         ),
       );
     }
@@ -2644,6 +2654,7 @@ window.__ModuleLoader__.load({
       const [open, setOpen] = React.useState(true);
       const steps = buildRunSteps(messages);
       const count = steps.length;
+      const toolCount = steps.filter((step) => step.type === 'tool').length;
       const startedAt = messages[0]?.createdAt;
       const duration = finished && finishedAt && startedAt ? formatDuration(finishedAt - startedAt) : '';
       return h(
@@ -2665,10 +2676,11 @@ window.__ModuleLoader__.load({
             },
           },
           h('span', { className: 'dcc-runChevron' }, open ? '▾' : '▸'),
-          finished ? h('span', { className: 'dcc-runMark' }, h(Icon, { name: 'check', size: 11 })) : null,
-          h('span', { className: 'dcc-runLabel' }, !finished ? t('run.running') : t('run.finishedShort')),
-          duration ? h('span', { className: 'dcc-runMeta' }, t('run.used', { duration })) : null,
-          h('span', { className: 'dcc-runCount' }, `${count} ${t('run.steps')}`),
+          h(
+            'span',
+            { className: 'dcc-runLabel' },
+            finished ? (toolCount ? t('run.executed') : t('run.finishedShort')) : toolCount ? t('run.executing') : t('run.running'),
+          ),
         ),
         open
           ? h(
@@ -2717,6 +2729,7 @@ window.__ModuleLoader__.load({
         if (activity.type === 'tool' && activity.toolCallId && tools.has(activity.toolCallId)) {
           const step = tools.get(activity.toolCallId);
           if (activity.title) step.title = activity.title;
+          if (activity.description) step.description = activity.description;
           if (activity.detail) step.result = activity.detail;
           if (activity.status) step.status = activity.status;
           continue;

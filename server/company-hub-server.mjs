@@ -1564,10 +1564,26 @@ class AcpHost {
     }
     if (update.sessionUpdate === 'tool_call') {
       const title = update.title || update.name || '工具调用';
-      state.tools.set(update.toolCallId, { title, rawInput: update.rawInput });
+      const input = update.rawInput;
+      let description = '';
+      let parsedInput = input;
+      if (typeof input === 'string') {
+        try {
+          parsedInput = JSON.parse(input);
+        } catch {
+          parsedInput = null;
+        }
+      }
+      if (parsedInput && typeof parsedInput === 'object') {
+        description = String(parsedInput.description || parsedInput.command || parsedInput.query || parsedInput.pattern || parsedInput.path || '').trim();
+      } else if (typeof input === 'string' && !input.trim().startsWith('{')) {
+        description = input.trim();
+      }
+      state.tools.set(update.toolCallId, { title, rawInput: update.rawInput, description });
       const toolActivity = {
         type: 'tool',
         title: clip(title, 200),
+        description: clip(description.replace(/\s+/g, ' '), 160),
         detail: update.rawInput === undefined ? '' : clip(update.rawInput, 400),
         status: 'running',
         toolCallId: update.toolCallId,
@@ -1584,10 +1600,12 @@ class AcpHost {
       const resultText = Array.isArray(update.content)
         ? update.content.map((item) => (item.type === 'content' && item.content?.type === 'text' ? item.content.text : '')).filter(Boolean).join('\n')
         : '';
-      const title = update.title || state.tools.get(update.toolCallId)?.title || update.toolCallId || '工具调用';
+      const known = state.tools.get(update.toolCallId) ?? {};
+      const title = update.title || known.title || update.toolCallId || '工具调用';
       const toolResult = {
         type: 'tool',
         title: clip(title, 200),
+        description: known.description || '',
         detail: clip(resultText, 600),
         status: update.status === 'completed' ? 'completed' : 'failed',
         toolCallId: update.toolCallId,
