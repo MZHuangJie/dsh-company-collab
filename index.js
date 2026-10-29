@@ -694,6 +694,7 @@ class CompanyHub {
   async sendMessage(groupId, text, options = {}) {
     const body = { text: String(text || '').trim(), task: options.task === true };
     if (options.asAi === true) body.asAi = true;
+    if (typeof options.toAi === 'boolean') body.toAi = options.toAi;
     if (Array.isArray(options.attachmentIds) && options.attachmentIds.length) body.attachmentIds = options.attachmentIds;
     const result = await this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/messages`, body);
     await this.refresh(true);
@@ -908,7 +909,7 @@ function handleApi(req, res) {
         return hub.createGroup(body.name, body.memberIds, body.repo).then((result) => ({ ok: true, ...result }));
       case 'POST messages':
         return hub
-          .sendMessage(body.groupId, body.text, { task: body.task, asAi: body.asAi, attachmentIds: body.attachmentIds })
+          .sendMessage(body.groupId, body.text, { task: body.task, asAi: body.asAi, toAi: body.toAi, attachmentIds: body.attachmentIds })
           .then((result) => ({ ok: true, ...result }));
       case 'POST attachments': {
         const attachment = await hub.uploadAttachment(body.groupId, body.name, body.dataBase64, body.mime);

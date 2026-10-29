@@ -2802,7 +2802,18 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
   const asAi = body.asAi === true;
   const ai = db.aiMember(auth.company.id);
   const author = asAi && ai ? ai : auth.employee;
-  const shouldReply = author.isAi === false;
+  const aiName = String(ai?.name || '').trim();
+  const mentionsAi =
+    Boolean(aiName && (text.includes(`@${aiName}`) || text.includes(`@ ${aiName}`))) ||
+    /@\s*ai\b|@\s*AI\b|@\s*Ai\b|AI\s*助理/i.test(text);
+  const humanNames = db
+    .companyEmployees(auth.company.id)
+    .filter((entry) => !entry.isAi)
+    .map((entry) => entry.name)
+    .filter(Boolean);
+  const mentionsHuman = humanNames.some((name) => text.includes(`@${name}`));
+  const toAi = body.toAi === undefined ? true : body.toAi === true;
+  const shouldReply = author.isAi === false && (mentionsAi || (!mentionsHuman && toAi));
   const approvalMatch = author.isAi === false ? /^\s*(允许|批准|拒绝|approve|reject)\s+([a-z0-9]{6})\s*$/i.exec(text) : null;
   if (approvalMatch) {
     const approval = db.data.approvals

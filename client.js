@@ -95,6 +95,11 @@ window.__ModuleLoader__.load({
       'chat.empty': '选择一个群组开始协作',
       'chat.emptyDesc': '左侧选择群组，或新建一个群组并把同事与 AI 拉进来。',
       'chat.placeholder': '在「{group}」里说点什么…（默认发给 AI，Enter 发送）',
+      'chat.placeholderAi': '在「{group}」里说点什么…（发给 AI，Enter 发送）',
+      'chat.placeholderPeople': '在「{group}」里说点什么…（发给同事，@AI 可询问）',
+      'chat.toAi': 'AI',
+      'chat.toPeople': '同事',
+      'chat.replyModeHint': '切换对话对象；输入 @ 时以 @ 为准',
       'chat.fileTooLarge': '文件超过 10MB：{name}',
       'chat.delete': '删除群组',
       'chat.deleteConfirm': '删除群组「{name}」？群聊历史、任务和服务端 Git 仓库会一起删除，且不可恢复。',
@@ -351,6 +356,11 @@ window.__ModuleLoader__.load({
       'chat.empty': 'Pick a group to start collaborating',
       'chat.emptyDesc': 'Choose a group on the left, or create one with colleagues and the AI.',
       'chat.placeholder': 'Message #{group} (sent to AI by default, Enter to send)',
+      'chat.placeholderAi': 'Message #{group} (to AI, Enter to send)',
+      'chat.placeholderPeople': 'Message #{group} (to colleagues, @AI to ask)',
+      'chat.toAi': 'AI',
+      'chat.toPeople': 'Colleagues',
+      'chat.replyModeHint': 'Switch recipient; @ mentions override this',
       'chat.fileTooLarge': 'File exceeds 10MB: {name}',
       'chat.delete': 'Delete group',
       'chat.deleteConfirm': 'Delete group "{name}"? Its chat history, tasks, and the server Git repository will be removed permanently.',
@@ -682,6 +692,9 @@ window.__ModuleLoader__.load({
 .dcc-msgImage{display:block;max-width:280px;max-height:220px;border-radius:8px;border:.5px solid var(--dsw-alias-border-l1);object-fit:contain}
 .dcc-msgFile{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border:.5px solid var(--dsw-alias-border-l1);border-radius:7px;color:var(--dsw-alias-label-secondary);font-size:11px;text-decoration:none;background:var(--dsw-alias-bg-layer-1)}
 .dcc-composerRow{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.dcc-replyToggle{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:999px;border:.5px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
+.dcc-replyToggle[data-mode=ai]{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 40%,transparent);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent);color:var(--dsw-alias-label-primary)}
+.dcc-replyToggle:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dcc-taskToggle{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:999px;border:.5px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
 .dcc-taskToggle:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dcc-taskToggle[data-on]{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,transparent)}
@@ -3105,6 +3118,7 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = React.useState('');
       const [sending, setSending] = React.useState(false);
       const [attachments, setAttachments] = React.useState([]);
+      const [replyMode, setReplyMode] = React.useState('ai');
       const [uploading, setUploading] = React.useState(false);
       const [dragging, setDragging] = React.useState(false);
       const [mention, setMention] = React.useState(null);
@@ -3214,6 +3228,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         setDraft('');
         setAttachments([]);
+        setReplyMode('ai');
       }, [groupId]);
 
       React.useEffect(() => {
@@ -3278,7 +3293,7 @@ window.__ModuleLoader__.load({
         setSending(true);
         setMention(null);
         try {
-          await store.send(group.id, text, { attachmentIds: attachments.map((item) => item.id) });
+          await store.send(group.id, text, { attachmentIds: attachments.map((item) => item.id), toAi: replyMode === 'ai' });
           setDraft('');
           setAttachments([]);
         } catch (failure) {
@@ -3501,7 +3516,7 @@ window.__ModuleLoader__.load({
               ref: textarea,
               rows: 1,
               value: draft,
-              placeholder: t('chat.placeholder', { group: group.name }),
+              placeholder: t(replyMode === 'ai' ? 'chat.placeholderAi' : 'chat.placeholderPeople', { group: group.name }),
               onPaste: (event) => {
                 const files = [...(event.clipboardData?.items ?? [])]
                   .filter((item) => item.kind === 'file')
@@ -3568,19 +3583,31 @@ window.__ModuleLoader__.load({
                   ),
                 )
               : null,
-            h(
-              'div',
-              { className: 'dcc-composerRow' },
               h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'dcc-btn dcc-sendBtn',
-                  'data-primary': '',
-                  style: { marginLeft: 'auto' },
-                  disabled: (!draft.trim() && !attachments.length) || sending || uploading,
-                  onClick: send,
-                },
+                'div',
+                { className: 'dcc-composerRow' },
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dcc-replyToggle',
+                    'data-mode': replyMode,
+                    title: t('chat.replyModeHint'),
+                    onClick: () => setReplyMode((value) => (value === 'ai' ? 'people' : 'ai')),
+                  },
+                  h(Icon, { name: replyMode === 'ai' ? 'sparkle' : 'users', size: 12 }),
+                  t(replyMode === 'ai' ? 'chat.toAi' : 'chat.toPeople'),
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dcc-btn dcc-sendBtn',
+                    'data-primary': '',
+                    style: { marginLeft: 'auto' },
+                    disabled: (!draft.trim() && !attachments.length) || sending || uploading,
+                    onClick: send,
+                  },
                 h(Icon, { name: 'send', size: 14 }),
                 t('action.send'),
               ),
