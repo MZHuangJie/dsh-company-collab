@@ -1209,9 +1209,11 @@ window.__ModuleLoader__.load({
         notice: null,
         selectedGroup: '',
         messages: {},
+        liveByGroup: {},
       };
       const listeners = new Set();
       const readMarks = new Map();
+      const liveStreams = new Map();
       let timer = null;
       let noticeTimer = null;
 
@@ -1267,6 +1269,7 @@ window.__ModuleLoader__.load({
         try {
           const json = await request('GET', '/state');
           publish({ ready: true, data: json, error: '' });
+          syncLiveGroups(json);
           return json;
         } catch (error) {
           publish({ ready: true, error: String(error.message || error) });
@@ -1278,8 +1281,10 @@ window.__ModuleLoader__.load({
         publish({ busy: true });
         try {
           const json = await request('POST', path, body);
-          if (json.state) publish({ data: json.state, error: '' });
-          else await refresh();
+          if (json.state) {
+            publish({ data: json.state, error: '' });
+            syncLiveGroups(json.state);
+          } else await refresh();
           return json;
         } finally {
           publish({ busy: false });
@@ -1361,12 +1366,129 @@ window.__ModuleLoader__.load({
         };
       }
 
+      const publishLive = (groupId, updater) => {
+        const previous = snapshot.liveByGroup?.[groupId] ?? null;
+        const next = typeof updater === 'function' ? updater(previous) : updater;
+        publish({ liveByGroup: { ...(snapshot.liveByGroup || {}), [groupId]: next } });
+      };
+
+      const stopLive = (groupId) => {
+        const stream = liveStreams.get(groupId);
+        if (!stream) return;
+        stream.stop();
+        liveStreams.delete(groupId);
+      };
+
+      const stopAllLive = () => {
+        for (const groupId of [...liveStreams.keys()]) stopLive(groupId);
+      };
+
+      const watchGroup = (groupId) => {
+        if (!groupId || liveStreams.has(groupId)) return;
+        const controller = new AbortController();
+        let stopped = false;
+        let retry = null;
+        const stream = {
+          stop() {
+            stopped = true;
+            if (retry) clearTimeout(retry);
+            controller.abort();
+          },
+        };
+        liveStreams.set(groupId, stream);
+        const applyRun = (event) => {
+          publishLive(groupId, (previous) => {
+            if (event.kind === 'state') {
+              return {
+                runId: event.runId,
+                thought: event.thought || '',
+                answer: event.answer || '',
+                activities: Array.isArray(event.activities) ? event.activities : [],
+                startedAt: event.startedAt || Date.now(),
+              };
+            }
+            if (event.kind === 'start') return { runId: event.runId, thought: '', answer: '', activities: [], startedAt: Date.now() };
+            if (!previous || previous.runId !== event.runId) return previous;
+            if (event.kind === 'thought_delta') return { ...previous, thought: `${previous.thought}${event.text || ''}` };
+            if (event.kind === 'answer_delta') return { ...previous, answer: `${previous.answer}${event.text || ''}` };
+            if (event.kind === 'activity' && event.activity) {
+              const activities = previous.activities.slice();
+              const index = event.activity.toolCallId
+                ? activities.findIndex((entry) => entry.toolCallId === event.activity.toolCallId)
+                : -1;
+              if (index >= 0) activities[index] = { ...activities[index], ...event.activity };
+              else activities.push(event.activity);
+              return { ...previous, activities };
+            }
+            if (event.kind === 'done') return null;
+            return previous;
+          });
+        };
+        const connect = async () => {
+          try {
+            const response = await fetch(`${API}/groups/${encodeURIComponent(groupId)}/events`, {
+              headers: { accept: 'text/event-stream' },
+              signal: controller.signal,
+            });
+            if (!response.ok || !response.body) throw new Error(`events ${response.status}`);
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done || stopped) break;
+              buffer += decoder.decode(value, { stream: true });
+              let boundary;
+              while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+                const block = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                let eventName = 'message';
+                const dataLines = [];
+                for (const line of block.split('\n')) {
+                  if (line.startsWith('event:')) eventName = line.slice(6).trim();
+                  else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+                }
+                if (!dataLines.length) continue;
+                let payload;
+                try {
+                  payload = JSON.parse(dataLines.join('\n'));
+                } catch {
+                  continue;
+                }
+                if (eventName === 'run') {
+                  applyRun(payload);
+                  if (payload.kind === 'done' && snapshot.selectedGroup === groupId) loadMessages(groupId, true).catch(() => {});
+                } else if (eventName === 'message' && payload.message) {
+                  if (snapshot.selectedGroup === groupId) loadMessages(groupId, true).catch(() => {});
+                } else if (eventName === 'approval') {
+                  if (snapshot.selectedGroup === groupId) loadMessages(groupId, true).catch(() => {});
+                }
+              }
+            }
+          } catch (error) {
+            if (stopped || controller.signal.aborted) return;
+          }
+          if (!stopped) retry = setTimeout(connect, 2000);
+        };
+        connect();
+      };
+
+      const syncLiveGroups = (data) => {
+        const ids = new Set((data?.groups ?? []).map((group) => group.id));
+        for (const groupId of [...liveStreams.keys()]) {
+          if (!ids.has(groupId)) stopLive(groupId);
+        }
+        for (const groupId of ids) watchGroup(groupId);
+      };
+
       return {
         getSnapshot,
         subscribe,
         refresh,
         notify,
         start,
+        watchGroup,
+        stopAllLive,
         mergeMessage(groupId, message) {
           const current = snapshot.messages[groupId] ?? { items: [], seq: 0, loading: false, error: '' };
           const items = current.items.slice();
@@ -1385,17 +1507,20 @@ window.__ModuleLoader__.load({
         createCompany: (companyName, employeeName) => act('/setup/company', { companyName, employeeName }),
         switchAccount: async (key) => {
           const result = await act('/accounts/switch', { key });
-          publish({ selectedGroup: '', messages: {}, live: null });
+          stopAllLive();
+          publish({ selectedGroup: '', messages: {}, liveByGroup: {} });
           return result;
         },
         loginOnServer: async (serverUrl, companyId, employeeName, accessCode) => {
           const result = await act('/accounts/login', { serverUrl, companyId, employeeName, accessCode });
-          publish({ selectedGroup: '', messages: {}, live: null });
+          stopAllLive();
+          publish({ selectedGroup: '', messages: {}, liveByGroup: {} });
           return result;
         },
         createCompanyOnServer: async (serverUrl, companyName, employeeName) => {
           const result = await act('/accounts/create', { serverUrl, companyName, employeeName });
-          publish({ selectedGroup: '', messages: {}, live: null });
+          stopAllLive();
+          publish({ selectedGroup: '', messages: {}, liveByGroup: {} });
           return result;
         },
         login: (companyId, employeeName, accessCode) => act('/setup/login', { companyId, employeeName, accessCode }),
@@ -3467,98 +3592,13 @@ window.__ModuleLoader__.load({
       const [uploading, setUploading] = React.useState(false);
       const [dragging, setDragging] = React.useState(false);
       const [mention, setMention] = React.useState(null);
-      const [live, setLive] = React.useState(null);
+      const live = (snap.liveByGroup ?? {})[groupId] ?? null;
       const [showKnowledge, setShowKnowledge] = React.useState(false);
       const scroller = React.useRef(null);
       const textarea = React.useRef(null);
 
       React.useEffect(() => {
-        if (!groupId) return undefined;
-        let stopped = false;
-        let retry = null;
-        const controller = new AbortController();
-        const applyRun = (event) => {
-          setLive((previous) => {
-            if (event.kind === 'state') {
-              return {
-                runId: event.runId,
-                thought: event.thought || '',
-                answer: event.answer || '',
-                activities: Array.isArray(event.activities) ? event.activities : [],
-                startedAt: event.startedAt || Date.now(),
-              };
-            }
-            if (event.kind === 'start') return { runId: event.runId, thought: '', answer: '', activities: [], startedAt: Date.now() };
-            if (!previous || previous.runId !== event.runId) return previous;
-            if (event.kind === 'thought_delta') return { ...previous, thought: `${previous.thought}${event.text || ''}` };
-            if (event.kind === 'answer_delta') return { ...previous, answer: `${previous.answer}${event.text || ''}` };
-            if (event.kind === 'activity' && event.activity) {
-              const activities = previous.activities.slice();
-              const index = event.activity.toolCallId
-                ? activities.findIndex((entry) => entry.toolCallId === event.activity.toolCallId)
-                : -1;
-              if (index >= 0) activities[index] = { ...activities[index], ...event.activity };
-              else activities.push(event.activity);
-              return { ...previous, activities };
-            }
-            if (event.kind === 'done') return null;
-            return previous;
-          });
-        };
-        const connect = async () => {
-          try {
-            const response = await fetch(`${API}/groups/${encodeURIComponent(groupId)}/events`, {
-              headers: { accept: 'text/event-stream' },
-              signal: controller.signal,
-            });
-            if (!response.ok || !response.body) throw new Error(`events ${response.status}`);
-            store.refreshMessages(groupId, true).catch(() => {});
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            for (;;) {
-              const { done, value } = await reader.read();
-              if (done || stopped) break;
-              buffer += decoder.decode(value, { stream: true });
-              let boundary;
-              while ((boundary = buffer.indexOf('\n\n')) >= 0) {
-                const block = buffer.slice(0, boundary);
-                buffer = buffer.slice(boundary + 2);
-                let eventName = 'message';
-                const dataLines = [];
-                for (const line of block.split('\n')) {
-                  if (line.startsWith('event:')) eventName = line.slice(6).trim();
-                  else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
-                }
-                if (!dataLines.length) continue;
-                let payload;
-                try {
-                  payload = JSON.parse(dataLines.join('\n'));
-                } catch {
-                  continue;
-                }
-                if (eventName === 'run') {
-                  applyRun(payload);
-                  if (payload.kind === 'done') store.refreshMessages(groupId, true).catch(() => {});
-                } else if (eventName === 'message' && payload.message) {
-                  store.mergeMessage(groupId, payload.message);
-                } else if (eventName === 'approval') {
-                  store.refreshMessages(groupId, true).catch(() => {});
-                }
-              }
-            }
-          } catch (error) {
-            if (stopped || controller.signal.aborted) return;
-          }
-          if (!stopped) retry = setTimeout(connect, 2000);
-        };
-        connect();
-        return () => {
-          stopped = true;
-          if (retry) clearTimeout(retry);
-          controller.abort();
-          setLive(null);
-        };
+        if (groupId) store.watchGroup(groupId);
       }, [groupId]);
 
       const mentionCandidates = React.useMemo(() => {
