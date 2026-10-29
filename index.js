@@ -572,10 +572,10 @@ class CompanyHub {
     return result.items;
   }
 
-  async createGroup(name, memberIds) {
+  async createGroup(name, memberIds, repo) {
     const trimmed = String(name || '').trim();
     if (!trimmed) throw new HubError('请填写群组名称');
-    const result = await this.fetchJson('POST', '/api/groups', { name: trimmed, memberIds: memberIds ?? [] });
+    const result = await this.fetchJson('POST', '/api/groups', { name: trimmed, memberIds: memberIds ?? [], repo: repo ?? {} });
     await this.refresh(true);
     return { group: result.group, state: this.snapshot() };
   }
@@ -779,7 +779,7 @@ function handleApi(req, res) {
           ? hub.removeContact(body.employeeId).then((state) => ({ ok: true, state }))
           : hub.addContact(body.employeeId).then((state) => ({ ok: true, state }));
       case 'POST groups':
-        return hub.createGroup(body.name, body.memberIds).then((result) => ({ ok: true, ...result }));
+        return hub.createGroup(body.name, body.memberIds, body.repo).then((result) => ({ ok: true, ...result }));
       case 'POST messages':
         return hub
           .sendMessage(body.groupId, body.text, { task: body.task, asAi: body.asAi })

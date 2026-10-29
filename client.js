@@ -211,6 +211,20 @@ window.__ModuleLoader__.load({
       'notice.clipboardFailed': '无法访问剪贴板',
       'modal.group.title': '新建群组',
       'modal.group.name': '群组名称',
+      'modal.group.repoMode': 'Git 仓库',
+      'modal.group.repoNew': '新建远程仓库',
+      'modal.group.repoLocal': '使用本地目录',
+      'modal.group.branch': '默认分支',
+      'modal.group.gitignore': '.gitignore 模板',
+      'modal.group.none': '不生成',
+      'modal.group.description': '仓库说明',
+      'modal.group.descriptionPlaceholder': '可选，写入 README',
+      'modal.group.initReadme': '初始化 README',
+      'modal.group.localPath': '本地目录',
+      'modal.group.localPlaceholder': '选择空目录或不存在路径，将 clone 群仓库',
+      'modal.group.localHint': '选择本地空目录/新路径，创建群后自动 clone；已有仓库需先手动绑定。',
+      'modal.group.localRequired': '请选择本地目录',
+      'repo.choose': '选择',
       'modal.group.placeholder': '例如：官网改版',
       'modal.group.members': '邀请同事',
       'modal.group.aiNote': 'AI 助理会自动加入新群组，并获得这个群组的共享工作区。',
@@ -418,6 +432,20 @@ window.__ModuleLoader__.load({
       'notice.clipboardFailed': 'Clipboard unavailable',
       'modal.group.title': 'New group',
       'modal.group.name': 'Group name',
+      'modal.group.repoMode': 'Git repository',
+      'modal.group.repoNew': 'Create remote repo',
+      'modal.group.repoLocal': 'Use local directory',
+      'modal.group.branch': 'Default branch',
+      'modal.group.gitignore': '.gitignore template',
+      'modal.group.none': 'None',
+      'modal.group.description': 'Repository description',
+      'modal.group.descriptionPlaceholder': 'Optional, written to README',
+      'modal.group.initReadme': 'Initialize README',
+      'modal.group.localPath': 'Local directory',
+      'modal.group.localPlaceholder': 'Empty or new path to clone the group repo into',
+      'modal.group.localHint': 'Pick an empty/new path; the group repo is cloned after creation. Existing repos must be bound manually.',
+      'modal.group.localRequired': 'Choose a local directory',
+      'repo.choose': 'Choose',
       'modal.group.placeholder': 'e.g. Website redesign',
       'modal.group.members': 'Invite colleagues',
       'modal.group.aiNote': 'The AI assistant joins automatically and gets this group’s shared workspace.',
@@ -632,7 +660,10 @@ window.__ModuleLoader__.load({
 .dcc-input::placeholder{color:var(--dsw-alias-label-tertiary)}
 .dcc-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
 .dcc-field{display:flex;flex-direction:column;gap:5px}
-.dcc-inline{display:flex;gap:8px}
+.dcc-inline{display:flex;gap:8px;align-items:flex-end}
+.dcc-segment{display:inline-flex;align-self:flex-start;gap:2px;padding:2px;border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
+.dcc-segment button{border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer}
+.dcc-segment button[data-on]{background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary);box-shadow:0 0 0 .5px var(--dsw-alias-border-l1)}
 .dcc-inline > .dcc-field{flex:1;min-width:0}
 .dcc-seg{display:flex;gap:2px;padding:2px;background:var(--dsw-alias-bg-layer-2);border-radius:9px}
 .dcc-seg button{flex:1;height:26px;border:0;border-radius:7px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:12px;cursor:pointer}
@@ -1197,7 +1228,7 @@ window.__ModuleLoader__.load({
         createEmployee: (name, role) => act('/employees', { name, role }),
         addContact: (employeeId) => act('/contacts', { employeeId }),
         removeContact: (employeeId) => act('/contacts', { employeeId, remove: true }),
-        createGroup: (name, memberIds) => act('/groups', { name, memberIds }),
+        createGroup: (name, memberIds, repo) => act('/groups', { name, memberIds, repo }),
         async openGroup(groupId) {
           publish({ selectedGroup: groupId });
           const existing = snapshot.messages[groupId];
@@ -1676,6 +1707,12 @@ window.__ModuleLoader__.load({
       const people = (data.directory ?? []).filter((entry) => entry.id !== me?.id && !entry.isAi);
       const contactIds = new Set((data.contacts ?? []).map((entry) => entry.id));
       const [name, setName] = React.useState('');
+      const [repoMode, setRepoMode] = React.useState('new');
+      const [branch, setBranch] = React.useState('main');
+      const [description, setDescription] = React.useState('');
+      const [gitignore, setGitignore] = React.useState('node');
+      const [initReadme, setInitReadme] = React.useState(true);
+      const [localPath, setLocalPath] = React.useState('');
       const [selected, setSelected] = React.useState(
         () => new Set(people.filter((entry) => contactIds.has(entry.id)).map((entry) => entry.id)),
       );
@@ -1691,16 +1728,41 @@ window.__ModuleLoader__.load({
 
       const submit = async () => {
         setError('');
+        if (repoMode === 'local' && !localPath.trim()) {
+          setError(t('modal.group.localRequired'));
+          return;
+        }
         setBusy(true);
         try {
-          const result = await store.createGroup(name, [...selected]);
+          const repo =
+            repoMode === 'new'
+              ? { mode: 'new', defaultBranch: branch.trim() || 'main', description: description.trim(), gitignore, initReadme }
+              : { mode: 'local', initReadme: false, gitignore: 'none' };
+          const result = await store.createGroup(name, [...selected], repo);
           const groupId = result.group?.id;
+          if (repoMode === 'local' && groupId && localPath.trim()) {
+            await store.bindRepo(groupId, localPath.trim());
+          }
           onClose();
           if (groupId) await store.openGroup(groupId);
         } catch (failure) {
           setError(String(failure.message || failure));
         } finally {
           setBusy(false);
+        }
+      };
+
+      const pickLocalDirectory = async () => {
+        try {
+          const picker = shared.ctx?.get?.('uiWorkspace');
+          if (!picker || typeof picker.pickDirectory !== 'function') {
+            setError(t('notice.pickerUnavailable'));
+            return;
+          }
+          const picked = await picker.pickDirectory();
+          if (picked) setLocalPath(picked);
+        } catch (failure) {
+          setError(String(failure.message || failure));
         }
       };
 
@@ -1744,6 +1806,96 @@ window.__ModuleLoader__.load({
             },
           }),
         ),
+        h(
+          'div',
+          { className: 'dcc-field' },
+          h('span', { className: 'dcc-label' }, t('modal.group.repoMode')),
+          h(
+            'div',
+            { className: 'dcc-segment' },
+            h(
+              'button',
+              { type: 'button', 'data-on': repoMode === 'new' ? '' : undefined, onClick: () => setRepoMode('new') },
+              t('modal.group.repoNew'),
+            ),
+            h(
+              'button',
+              { type: 'button', 'data-on': repoMode === 'local' ? '' : undefined, onClick: () => setRepoMode('local') },
+              t('modal.group.repoLocal'),
+            ),
+          ),
+        ),
+        repoMode === 'new'
+          ? h(
+              React.Fragment,
+              null,
+              h(
+                'div',
+                { className: 'dcc-inline' },
+                h(
+                  'label',
+                  { className: 'dcc-field', style: { flex: 1 } },
+                  h('span', { className: 'dcc-label' }, t('modal.group.branch')),
+                  h('input', {
+                    className: 'dcc-input',
+                    value: branch,
+                    placeholder: 'main',
+                    onChange: (event) => setBranch(event.target.value),
+                  }),
+                ),
+                h(
+                  'label',
+                  { className: 'dcc-field', style: { flex: 1 } },
+                  h('span', { className: 'dcc-label' }, t('modal.group.gitignore')),
+                  h(
+                    'select',
+                    { className: 'dcc-input', value: gitignore, onChange: (event) => setGitignore(event.target.value) },
+                    h('option', { value: 'node' }, 'Node'),
+                    h('option', { value: 'python' }, 'Python'),
+                    h('option', { value: 'none' }, t('modal.group.none')),
+                  ),
+                ),
+              ),
+              h(
+                'label',
+                { className: 'dcc-field' },
+                h('span', { className: 'dcc-label' }, t('modal.group.description')),
+                h('input', {
+                  className: 'dcc-input',
+                  value: description,
+                  placeholder: t('modal.group.descriptionPlaceholder'),
+                  onChange: (event) => setDescription(event.target.value),
+                }),
+              ),
+              h(
+                'label',
+                { className: 'dcc-checkRow', style: { paddingLeft: 0 } },
+                h('input', { type: 'checkbox', checked: initReadme, onChange: () => setInitReadme(!initReadme) }),
+                h('span', null, t('modal.group.initReadme')),
+              ),
+            )
+          : h(
+              'label',
+              { className: 'dcc-field' },
+              h('span', { className: 'dcc-label' }, t('modal.group.localPath')),
+              h(
+                'div',
+                { className: 'dcc-inline' },
+                h('input', {
+                  className: 'dcc-input',
+                  value: localPath,
+                  placeholder: t('modal.group.localPlaceholder'),
+                  onChange: (event) => setLocalPath(event.target.value),
+                }),
+                h(
+                  'button',
+                  { type: 'button', className: 'dcc-btn', style: { flex: 'none' }, onClick: pickLocalDirectory },
+                  h(Icon, { name: 'folder', size: 13 }),
+                  t('repo.choose'),
+                ),
+              ),
+              h('p', { className: 'dcc-note' }, t('modal.group.localHint')),
+            ),
         h(
           'div',
           { className: 'dcc-field' },

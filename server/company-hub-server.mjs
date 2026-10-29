@@ -1032,11 +1032,17 @@ function groupRepoPath(relative) {
   return resolved;
 }
 
-function initGroupRepo(companyId, groupId, groupName) {
+function initGroupRepo(companyId, groupId, groupName, options = {}) {
   fs.mkdirSync(GIT_ROOT, { recursive: true });
   const relative = groupRepoRelative(companyId, groupId);
   const repoDir = groupRepoPath(relative);
   if (fs.existsSync(repoDir)) return relative;
+  const branch = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$/.test(String(options.defaultBranch || '').trim())
+    ? String(options.defaultBranch).trim()
+    : 'main';
+  const description = String(options.description || '').trim().slice(0, 300);
+  const readme = options.initReadme !== false;
+  const ignoreTemplate = ['node', 'python', 'none'].includes(options.gitignore) ? options.gitignore : 'node';
   fs.mkdirSync(repoDir, { recursive: true });
   const env = {
     ...process.env,
@@ -1046,23 +1052,30 @@ function initGroupRepo(companyId, groupId, groupName) {
     GIT_COMMITTER_EMAIL: 'ai@company-hub',
   };
   const run = (args, cwd) => spawnSync('git', args, { cwd, env, encoding: 'utf8' });
-  let result = run(['init', '--bare', '--initial-branch=main', repoDir]);
+  let result = run(['init', '--bare', `--initial-branch=${branch}`, repoDir]);
   if (result.status !== 0) throw new Error(result.stderr || 'git init 失败');
+  if (!readme && ignoreTemplate === 'none') return relative;
   const seed = fs.mkdtempSync(path.join(GIT_ROOT, '.seed-'));
   try {
-    result = run(['init', '--initial-branch=main'], seed);
+    result = run(['init', `--initial-branch=${branch}`], seed);
     if (result.status !== 0) throw new Error(result.stderr || 'git seed init 失败');
-    fs.writeFileSync(
-      path.join(seed, 'README.md'),
-      `# ${groupName}\n\n这是「${groupName}」群的共享 Git 仓库。\n\n- 每位成员自行 clone 到本地目录；\n- AI 修改会在分支上测试后合并到 main；\n- 其他成员同步只需 git pull。\n`,
-      'utf8',
-    );
-    fs.writeFileSync(path.join(seed, '.gitignore'), 'node_modules/\n.DS_Store\nThumbs.db\n', 'utf8');
+    if (readme) {
+      fs.writeFileSync(
+        path.join(seed, 'README.md'),
+        `# ${groupName}\n\n${description || `这是「${groupName}」群的共享 Git 仓库。`}\n\n- 每位成员自行 clone 到本地目录；\n- AI 修改会在分支上测试后合并到 ${branch}；\n- 其他成员同步只需 git pull。\n`,
+        'utf8',
+      );
+    }
+    if (ignoreTemplate === 'python') {
+      fs.writeFileSync(path.join(seed, '.gitignore'), '__pycache__/\n*.py[cod]\n.venv/\n.env\n.DS_Store\n', 'utf8');
+    } else if (ignoreTemplate === 'node') {
+      fs.writeFileSync(path.join(seed, '.gitignore'), 'node_modules/\ndist/\n.DS_Store\nThumbs.db\n.env\n', 'utf8');
+    }
     run(['add', '.'], seed);
     result = run(['commit', '-m', '初始化群仓库'], seed);
     if (result.status !== 0) throw new Error(result.stderr || 'git seed commit 失败');
     run(['remote', 'add', 'origin', repoDir], seed);
-    result = run(['push', 'origin', 'main'], seed);
+    result = run(['push', 'origin', branch], seed);
     if (result.status !== 0) throw new Error(result.stderr || 'git seed push 失败');
   } finally {
     fs.rmSync(seed, { recursive: true, force: true });
@@ -1759,7 +1772,7 @@ route('POST', /^\/api\/groups$/, async (req) => {
     createdAt: now(),
     seq: 0,
   };
-  group.repoPath = initGroupRepo(auth.company.id, group.id, name);
+  group.repoPath = initGroupRepo(auth.company.id, group.id, name, body.repo && typeof body.repo === 'object' ? body.repo : {});
   db.data.groups.push(group);
   db.data.messages.push({
     id: randomId('msg'),
