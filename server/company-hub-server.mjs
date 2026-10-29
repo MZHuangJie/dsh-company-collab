@@ -514,6 +514,21 @@ function knowledgeExt(filePath, name) {
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>');
   }
+  if (ext === '.xlsx' || ext === '.xlsm') {
+    const script = [
+      'import sys',
+      'from openpyxl import load_workbook',
+      'wb=load_workbook(sys.argv[1], data_only=True, read_only=True)',
+      'for ws in wb.worksheets:',
+      '    print("\\n## " + str(ws.title))',
+      '    for row in ws.iter_rows(values_only=True):',
+      '        values=[str(v) for v in row if v is not None]',
+      '        if values: print("\\t".join(values))',
+    ].join('\n');
+    const result = spawnSync('python3', ['-c', script, filePath], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+    if (result.status !== 0) throw bad(`无法解析 XLSX：${String(result.stderr || '').slice(0, 200)}`);
+    return result.stdout;
+  }
   if (ext === '.pdf') {
     const script = [
       'import sys',
@@ -525,7 +540,7 @@ function knowledgeExt(filePath, name) {
     if (result.status !== 0) throw bad(`无法解析 PDF：${String(result.stderr || '').slice(0, 200)}`);
     return result.stdout;
   }
-  throw bad('暂不支持该文件类型；支持 txt / md / csv / json / html / docx / pdf');
+  throw bad('暂不支持该文件类型；支持 txt / md / csv / json / html / docx / xlsx / pdf');
 }
 
 function knowledgeChunks(text) {
