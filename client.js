@@ -19,6 +19,21 @@ window.__ModuleLoader__.load({
     const zh = {
       'panel.title': '企业协作',
       'panel.subtitle': '公司项目协同工作模式',
+      'accounts.title': '公司与服务器',
+      'accounts.saved': '已保存的公司',
+      'accounts.empty': '还没有保存其他公司；可以在下面登录或创建。',
+      'accounts.current': '当前',
+      'accounts.add': '添加公司',
+      'accounts.login': '登录已有公司',
+      'accounts.create': '创建新公司',
+      'accounts.server': '服务器地址',
+      'accounts.companyId': '公司 ID',
+      'accounts.companyName': '公司名称',
+      'accounts.person': '你的姓名',
+      'accounts.accessCode': '访问码',
+      'accounts.loginAction': '登录并切换',
+      'accounts.createAction': '创建并切换',
+      'accounts.required': '请填写必填项',
       'setup.title': '连接你自己的公司服务器',
       'setup.desc': '企业协作使用你自行运行的服务器保存公司、员工账号、群组与 Git 仓库。插件自带一个轻量服务器，复制命令即可在本机或局域网启动。',
       'setup.server': '服务器地址',
@@ -282,6 +297,21 @@ window.__ModuleLoader__.load({
     const en = {
       'panel.title': 'Company Collaboration',
       'panel.subtitle': 'Team work mode for company projects',
+      'accounts.title': 'Companies and servers',
+      'accounts.saved': 'Saved companies',
+      'accounts.empty': 'No other companies saved yet; log in or create one below.',
+      'accounts.current': 'Current',
+      'accounts.add': 'Add company',
+      'accounts.login': 'Log in to existing',
+      'accounts.create': 'Create company',
+      'accounts.server': 'Server URL',
+      'accounts.companyId': 'Company ID',
+      'accounts.companyName': 'Company name',
+      'accounts.person': 'Your name',
+      'accounts.accessCode': 'Access code',
+      'accounts.loginAction': 'Log in and switch',
+      'accounts.createAction': 'Create and switch',
+      'accounts.required': 'Fill the required fields',
       'setup.title': 'Connect your own company server',
       'setup.desc': 'Company collaboration keeps companies, employee accounts, groups and workspace files on a server you run yourself. This plugin ships a small server you can start on this machine or your LAN.',
       'setup.server': 'Server address',
@@ -763,6 +793,12 @@ window.__ModuleLoader__.load({
 .dcc-input::placeholder{color:var(--dsw-alias-label-tertiary)}
 .dcc-input:focus{outline:none;border-color:var(--dsw-alias-brand-primary)}
 .dcc-field{display:flex;flex-direction:column;gap:5px}
+.dcc-accountList{display:flex;flex-direction:column;gap:5px;max-height:190px;overflow-y:auto}
+.dcc-accountItem{display:flex;align-items:center;gap:8px;text-align:left;border:.5px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);border-radius:8px;padding:7px 8px;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer}
+.dcc-accountItem[data-active]{border-color:var(--dsw-alias-brand-primary)}
+.dcc-accountMain{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.dcc-accountName{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcc-accountBadge{font-size:10px;color:var(--dsw-alias-brand-primary);flex:none}
 .dcc-inline{display:flex;gap:8px;align-items:flex-end}
 .dcc-segment{display:inline-flex;align-self:flex-start;gap:2px;padding:2px;border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
 .dcc-segment button{border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer}
@@ -1312,6 +1348,21 @@ window.__ModuleLoader__.load({
         },
         configureServer: (serverUrl) => act('/settings', { serverUrl }),
         createCompany: (companyName, employeeName) => act('/setup/company', { companyName, employeeName }),
+        switchAccount: async (key) => {
+          const result = await act('/accounts/switch', { key });
+          publish({ selectedGroup: '', messages: {}, live: null });
+          return result;
+        },
+        loginOnServer: async (serverUrl, companyId, employeeName, accessCode) => {
+          const result = await act('/accounts/login', { serverUrl, companyId, employeeName, accessCode });
+          publish({ selectedGroup: '', messages: {}, live: null });
+          return result;
+        },
+        createCompanyOnServer: async (serverUrl, companyName, employeeName) => {
+          const result = await act('/accounts/create', { serverUrl, companyName, employeeName });
+          publish({ selectedGroup: '', messages: {}, live: null });
+          return result;
+        },
         login: (companyId, employeeName, accessCode) => act('/setup/login', { companyId, employeeName, accessCode }),
         joinCompany: (companyId) => act('/companies/join', { companyId }),
         searchCompanies: async (query) => {
@@ -3135,6 +3186,160 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function AccountDialog({ t, snap, onClose }) {
+      const store = shared.store;
+      const accounts = snap.accounts ?? [];
+      const [mode, setMode] = React.useState('login');
+      const [serverUrl, setServerUrl] = React.useState('');
+      const [companyId, setCompanyId] = React.useState('');
+      const [companyName, setCompanyName] = React.useState('');
+      const [employeeName, setEmployeeName] = React.useState(snap.identity?.employee?.name ?? '');
+      const [accessCode, setAccessCode] = React.useState('');
+      const [busy, setBusy] = React.useState(false);
+      const [error, setError] = React.useState('');
+
+      const switchTo = async (key) => {
+        setBusy(true);
+        setError('');
+        try {
+          await store.switchAccount(key);
+          onClose();
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      const submit = async () => {
+        setBusy(true);
+        setError('');
+        try {
+          if (mode === 'create') {
+            if (!serverUrl.trim() || !companyName.trim() || !employeeName.trim()) throw new Error(t('accounts.required'));
+            await store.createCompanyOnServer(serverUrl.trim(), companyName.trim(), employeeName.trim());
+          } else {
+            if (!serverUrl.trim() || !companyId.trim() || !employeeName.trim() || !accessCode.trim()) throw new Error(t('accounts.required'));
+            await store.loginOnServer(serverUrl.trim(), companyId.trim(), employeeName.trim(), accessCode.trim());
+          }
+          onClose();
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      return h(
+        Modal,
+        {
+          t,
+          title: t('accounts.title'),
+          onClose,
+          footer: [h('button', { key: 'close', type: 'button', className: 'dcc-btn', onClick: onClose }, t('action.close'))],
+        },
+        h(
+          'div',
+          { className: 'dcc-field' },
+          h('span', { className: 'dcc-label' }, t('accounts.saved')),
+          accounts.length
+            ? h(
+                'div',
+                { className: 'dcc-accountList' },
+                accounts.map((account) =>
+                  h(
+                    'button',
+                    {
+                      key: account.key,
+                      type: 'button',
+                      className: 'dcc-accountItem',
+                      'data-active': account.key === snap.activeAccount ? '' : undefined,
+                      disabled: busy,
+                      onClick: () => switchTo(account.key),
+                    },
+                    h(Icon, { name: 'company', size: 14 }),
+                    h(
+                      'span',
+                      { className: 'dcc-accountMain' },
+                      h('span', { className: 'dcc-accountName' }, account.companyName || account.companyId),
+                      h('span', { className: 'dcc-note' }, `${account.serverUrl} · ${account.employeeName || ''}`),
+                    ),
+                    account.key === snap.activeAccount ? h('span', { className: 'dcc-accountBadge' }, t('accounts.current')) : null,
+                  ),
+                ),
+              )
+            : h('div', { className: 'dcc-note' }, t('accounts.empty')),
+        ),
+        h(
+          'div',
+          { className: 'dcc-field' },
+          h('span', { className: 'dcc-label' }, t('accounts.add')),
+          h(
+            'div',
+            { className: 'dcc-segment' },
+            h(
+              'button',
+              { type: 'button', 'data-on': mode === 'login' ? '' : undefined, onClick: () => setMode('login') },
+              t('accounts.login'),
+            ),
+            h(
+              'button',
+              { type: 'button', 'data-on': mode === 'create' ? '' : undefined, onClick: () => setMode('create') },
+              t('accounts.create'),
+            ),
+          ),
+        ),
+        h(
+          'label',
+          { className: 'dcc-field' },
+          h('span', { className: 'dcc-label' }, t('accounts.server')),
+          h('input', {
+            className: 'dcc-input',
+            value: serverUrl,
+            placeholder: 'https://dsh.example.com',
+            onChange: (event) => setServerUrl(event.target.value),
+          }),
+        ),
+        mode === 'create'
+          ? h(
+              'label',
+              { className: 'dcc-field' },
+              h('span', { className: 'dcc-label' }, t('accounts.companyName')),
+              h('input', { className: 'dcc-input', value: companyName, onChange: (event) => setCompanyName(event.target.value) }),
+            )
+          : h(
+              'label',
+              { className: 'dcc-field' },
+              h('span', { className: 'dcc-label' }, t('accounts.companyId')),
+              h('input', { className: 'dcc-input', value: companyId, onChange: (event) => setCompanyId(event.target.value) }),
+            ),
+        h(
+          'label',
+          { className: 'dcc-field' },
+          h('span', { className: 'dcc-label' }, t('accounts.person')),
+          h('input', { className: 'dcc-input', value: employeeName, onChange: (event) => setEmployeeName(event.target.value) }),
+        ),
+        mode === 'login'
+          ? h(
+              'label',
+              { className: 'dcc-field' },
+              h('span', { className: 'dcc-label' }, t('accounts.accessCode')),
+              h('input', {
+                className: 'dcc-input',
+                value: accessCode,
+                onChange: (event) => setAccessCode(event.target.value.toUpperCase()),
+              }),
+            )
+          : null,
+        error ? h(ErrorLine, { text: error }) : null,
+        h(
+          'button',
+          { type: 'button', className: 'dcc-btn', 'data-primary': '', disabled: busy, onClick: submit },
+          busy ? t('loading') : mode === 'create' ? t('accounts.createAction') : t('accounts.loginAction'),
+        ),
+      );
+    }
+
     function ChatPane({ t, snap, onNewGroup }) {
       const store = shared.store;
       const data = snap.data;
@@ -3704,6 +3909,7 @@ window.__ModuleLoader__.load({
       const [query, setQuery] = React.useState('');
       const [showGroup, setShowGroup] = React.useState(false);
       const [showSettings, setShowSettings] = React.useState(false);
+      const [showAccounts, setShowAccounts] = React.useState(false);
 
       const data = snap.data;
       const identity = data?.identity;
@@ -3850,6 +4056,17 @@ window.__ModuleLoader__.load({
               {
                 type: 'button',
                 className: 'dcc-iconBtn',
+                'aria-label': t('accounts.title'),
+                title: t('accounts.title'),
+                onClick: () => setShowAccounts(true),
+              },
+              h(Icon, { name: 'company', size: 16 }),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dcc-iconBtn',
                 'aria-label': t('action.settings'),
                 title: t('action.settings'),
                 onClick: () => setShowSettings(true),
@@ -3881,6 +4098,7 @@ window.__ModuleLoader__.load({
         ),
         showGroup ? h(GroupDialog, { t, snap, onClose: () => setShowGroup(false) }) : null,
         showSettings ? h(SettingsDialog, { t, snap, onClose: () => setShowSettings(false) }) : null,
+        showAccounts ? h(AccountDialog, { t, snap, onClose: () => setShowAccounts(false) }) : null,
         h(Notice, { t, notice: snap.notice }),
       );
     }

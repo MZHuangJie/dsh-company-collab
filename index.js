@@ -77,12 +77,14 @@ class HubError extends Error {
 
 function defaultState() {
   return {
-    version: 1,
+    version: 2,
     serverUrl: '',
     identity: null,
     deviceSecrets: {},
     gitToken: '',
     groupRepos: {},
+    accounts: [],
+    activeAccount: '',
   };
 }
 
@@ -96,6 +98,8 @@ function loadState() {
       deviceSecrets: parsed.deviceSecrets && typeof parsed.deviceSecrets === 'object' ? parsed.deviceSecrets : {},
       gitToken: typeof parsed.gitToken === 'string' ? parsed.gitToken : '',
       groupRepos: parsed.groupRepos && typeof parsed.groupRepos === 'object' ? parsed.groupRepos : {},
+      accounts: Array.isArray(parsed.accounts) ? parsed.accounts.filter((entry) => entry && entry.identity && entry.serverUrl) : [],
+      activeAccount: typeof parsed.activeAccount === 'string' ? parsed.activeAccount : '',
     };
   } catch {
     return defaultState();
@@ -122,6 +126,9 @@ class CompanyHub {
     this.connection = { status: 'idle', message: '', checkedAt: 0 };
     this.serverInfo = null;
     this.linkAttempted = '';
+    if (this.state.identity && this.state.serverUrl && !this.state.activeAccount) {
+      this.saveCurrentAccount();
+    }
   }
 
   async refreshAccount(force = false) {
@@ -149,6 +156,7 @@ class CompanyHub {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new HubError('服务器地址需以 http:// 或 https:// 开头');
     if (this.state.serverUrl && this.state.serverUrl !== trimmed && this.state.identity) {
       // A different server means a different company; keeping the old login would mix data.
+      this.saveCurrentAccount();
       this.state.identity = null;
       this.remote = null;
       this.remoteAt = 0;
@@ -251,6 +259,91 @@ class CompanyHub {
 
   // ---- account
 
+  accountKey(serverUrl = this.state.serverUrl, identity = this.state.identity) {
+    if (!serverUrl || !identity?.company?.id) return '';
+    return `${String(serverUrl).replace(/\/+$/, '')}|${identity.company.id}`;
+  }
+
+  saveCurrentAccount() {
+    const key = this.accountKey();
+    if (!key) return;
+    const entry = {
+      key,
+      serverUrl: this.state.serverUrl,
+      identity: this.state.identity,
+      gitToken: this.state.gitToken || '',
+      groupRepos: this.state.groupRepos || {},
+      deviceSecrets: this.state.deviceSecrets || {},
+    };
+    const accounts = Array.isArray(this.state.accounts) ? this.state.accounts : [];
+    this.state.accounts = [...accounts.filter((item) => item.key !== key), entry];
+    this.state.activeAccount = key;
+    saveState(this.state);
+  }
+
+  persistCurrentAccount() {
+    this.saveCurrentAccount();
+  }
+
+  async switchAccount(key) {
+    if (!key) throw new HubError('请选择公司');
+    const target = (this.state.accounts || []).find((entry) => entry.key === key);
+    if (!target) throw new HubError('找不到这个公司配置');
+    this.saveCurrentAccount();
+    this.state.serverUrl = target.serverUrl;
+    this.state.identity = target.identity;
+    this.state.gitToken = target.gitToken || '';
+    this.state.groupRepos = target.groupRepos || {};
+    this.state.deviceSecrets = target.deviceSecrets || {};
+    this.state.activeAccount = key;
+    this.remote = null;
+    this.remoteAt = 0;
+    this.serverInfo = null;
+    this.connection = { status: 'idle', message: '', checkedAt: 0 };
+    saveState(this.state);
+    try {
+      this.serverInfo = await this.fetchJson('GET', '/health', undefined, false);
+      this.connection = { status: 'ok', message: '已连接', checkedAt: now() };
+    } catch (error) {
+      this.connection = { status: 'error', message: String(error.message || error), checkedAt: now() };
+    }
+    await this.refresh(true).catch(() => {});
+    this.persistCurrentAccount();
+    return this.snapshot();
+  }
+
+  async loginOnServer(serverUrl, companyId, employeeName, accessCode) {
+    const previous = this.state.activeAccount;
+    this.saveCurrentAccount();
+    try {
+      await this.configure(serverUrl);
+      await this.login(companyId, employeeName, accessCode);
+      this.persistCurrentAccount();
+      return this.snapshot();
+    } catch (error) {
+      if (previous && (this.state.accounts || []).some((entry) => entry.key === previous)) {
+        await this.switchAccount(previous).catch(() => {});
+      }
+      throw error;
+    }
+  }
+
+  async createCompanyOnServer(serverUrl, companyName, employeeName) {
+    const previous = this.state.activeAccount;
+    this.saveCurrentAccount();
+    try {
+      await this.configure(serverUrl);
+      await this.createCompany(companyName, employeeName);
+      this.persistCurrentAccount();
+      return this.snapshot();
+    } catch (error) {
+      if (previous && (this.state.accounts || []).some((entry) => entry.key === previous)) {
+        await this.switchAccount(previous).catch(() => {});
+      }
+      throw error;
+    }
+  }
+
   async createCompany(companyName, employeeName) {
     if (!this.state.serverUrl) throw new HubError('请先填写并连接服务器地址');
     const name = String(companyName || '').trim();
@@ -275,6 +368,7 @@ class CompanyHub {
     }
     saveState(this.state);
     await this.refresh(true).catch(() => {});
+    this.persistCurrentAccount();
     return this.snapshot();
   }
 
@@ -302,6 +396,7 @@ class CompanyHub {
     this.state.identity = { company: result.company, employee: result.employee, token: result.token };
     saveState(this.state);
     await this.refresh(true).catch(() => {});
+    this.persistCurrentAccount();
     return this.snapshot();
   }
 
@@ -316,6 +411,7 @@ class CompanyHub {
     if (!value) throw new HubError('请填写显示名');
     const result = await this.fetchJson('POST', '/api/me/rename', { name: value });
     await this.refresh(true);
+    this.persistCurrentAccount();
     return { employee: result.employee, state: this.snapshot() };
   }
 
@@ -532,6 +628,7 @@ class CompanyHub {
     this.state.identity = { company: result.company, employee: result.employee, token: result.token };
     saveState(this.state);
     await this.refresh(true).catch(() => {});
+    this.persistCurrentAccount();
     return this.snapshot();
   }
 
@@ -758,6 +855,14 @@ class CompanyHub {
           }
         : null,
       serverScript: serverScriptInfo(),
+      activeAccount: this.state.activeAccount || '',
+      accounts: (this.state.accounts || []).map((entry) => ({
+        key: entry.key,
+        serverUrl: entry.serverUrl,
+        companyId: entry.identity?.company?.id ?? '',
+        companyName: entry.identity?.company?.name ?? '',
+        employeeName: entry.identity?.employee?.name ?? '',
+      })),
       access: { admin: this.state.identity?.employee?.role === 'admin' },
     };
   }
@@ -901,6 +1006,16 @@ function handleApi(req, res) {
         return hub.login(body.companyId, body.employeeName, body.accessCode).then((state) => ({ ok: true, state }));
       case 'POST setup/logout':
         return { ok: true, state: hub.logout() };
+      case 'POST accounts/switch':
+        return hub.switchAccount(body.key).then((state) => ({ ok: true, state }));
+      case 'POST accounts/login':
+        return hub
+          .loginOnServer(body.serverUrl, body.companyId, body.employeeName, body.accessCode)
+          .then((state) => ({ ok: true, state }));
+      case 'POST accounts/create':
+        return hub
+          .createCompanyOnServer(body.serverUrl, body.companyName, body.employeeName)
+          .then((state) => ({ ok: true, state }));
       case 'POST employees': {
         const result = await hub.createEmployee(body.name, body.role);
         return { ok: true, ...result };
