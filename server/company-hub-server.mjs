@@ -542,6 +542,22 @@ function serveGroupEvents(req, res, url) {
     GROUP_STREAMS.set(group.id, clients);
   }
   clients.add(res);
+  const host = ACP_HOSTS.get(group.id);
+  const state = host?.runState;
+  if (state) {
+    try {
+      res.write(`event: run\ndata: ${JSON.stringify({
+        kind: 'state',
+        runId: state.runId,
+        thought: state.thought || '',
+        answer: state.answer || '',
+        activities: state.activities || [],
+        startedAt: state.startedAt || Date.now(),
+      })}\n\n`);
+    } catch {
+      /* the client will reconnect */
+    }
+  }
   const heartbeat = setInterval(() => {
     try {
       res.write(': ping\n\n');
@@ -1556,7 +1572,7 @@ class AcpHost {
 
   async run(text, trigger) {
     const connection = await this.ensure();
-    this.runState = { runId: randomId('run'), thought: '', answer: '', triggeredBy: trigger.authorId, tools: new Map() };
+    this.runState = { runId: randomId('run'), thought: '', answer: '', triggeredBy: trigger.authorId, tools: new Map(), activities: [], startedAt: now() };
     broadcastGroupEvent(this.group.id, 'run', { runId: this.runState.runId, kind: 'start' });
     const members = db
       .companyEmployees(this.company.id)
@@ -1629,6 +1645,18 @@ class AcpHost {
     broadcastGroupEvent(this.group.id, 'message', { message: messageView(finalMessage) });
   }
 
+  recordActivity(activity) {
+    const state = this.runState;
+    if (!state) return;
+    const activities = state.activities || (state.activities = []);
+    const index = activity.toolCallId
+      ? activities.findIndex((entry) => entry.toolCallId === activity.toolCallId)
+      : -1;
+    if (index >= 0) activities[index] = { ...activities[index], ...activity };
+    else activities.push(activity);
+    broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'activity', activity });
+  }
+
   onUpdate(params) {
     const update = params?.update;
     const state = this.runState;
@@ -1682,7 +1710,7 @@ class AcpHost {
         runId: state.runId,
         activity: toolActivity,
       });
-      broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'activity', activity: toolActivity });
+      this.recordActivity(toolActivity);
       return;
     }
     if (update.sessionUpdate === 'tool_call_update' && (update.status === 'completed' || update.status === 'failed')) {
@@ -1704,7 +1732,7 @@ class AcpHost {
         runId: state.runId,
         activity: toolResult,
       });
-      broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'activity', activity: toolResult });
+      this.recordActivity(toolResult);
       return;
     }
     if (update.sessionUpdate === 'plan' && Array.isArray(update.entries)) {
@@ -1716,7 +1744,7 @@ class AcpHost {
           runId: state.runId,
           activity: planActivity,
         });
-        broadcastGroupEvent(this.group.id, 'run', { runId: state.runId, kind: 'activity', activity: planActivity });
+        this.recordActivity(planActivity);
       }
     }
   }

@@ -835,7 +835,7 @@ window.__ModuleLoader__.load({
 .dcc-error{font-size:11.5px;line-height:1.5;color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent);border:.5px solid color-mix(in srgb,var(--dsw-alias-state-error-primary) 30%,transparent);border-radius:8px;padding:8px 10px;white-space:pre-wrap}
 .dcc-hintRow{display:flex;align-items:flex-start;gap:6px;font-size:11px;line-height:1.55;color:var(--dsw-alias-label-tertiary)}
 .dcc-modalBackdrop{position:fixed;inset:0;z-index:60;background:rgba(0,0,0,.42);display:flex;align-items:center;justify-content:center;padding:24px}
-.dcc-modal{width:min(560px,100%);max-height:min(640px,calc(100vh - 48px));display:flex;flex-direction:column;border-radius:14px;border:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);box-shadow:0 24px 70px rgba(0,0,0,.32);overflow:hidden}
+.dcc-modal{width:min(560px,100%);max-height:min(640px,calc(100vh - 48px));display:flex;flex-direction:column;border-radius:14px;border:.5px solid var(--dsw-alias-border-l2);background:var(--dts-modal-bg,var(--dsw-alias-bg-layer-1));box-shadow:0 24px 70px rgba(0,0,0,.32);overflow:hidden}
 .dcc-modalHead{flex:none;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 16px;border-bottom:.5px solid var(--dsw-alias-border-l1)}
 .dcc-modalTitle{font-size:14px;font-weight:600}
 .dcc-modalBody{flex:1;min-height:0;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:12px}
@@ -3479,6 +3479,15 @@ window.__ModuleLoader__.load({
         const controller = new AbortController();
         const applyRun = (event) => {
           setLive((previous) => {
+            if (event.kind === 'state') {
+              return {
+                runId: event.runId,
+                thought: event.thought || '',
+                answer: event.answer || '',
+                activities: Array.isArray(event.activities) ? event.activities : [],
+                startedAt: event.startedAt || Date.now(),
+              };
+            }
             if (event.kind === 'start') return { runId: event.runId, thought: '', answer: '', activities: [], startedAt: Date.now() };
             if (!previous || previous.runId !== event.runId) return previous;
             if (event.kind === 'thought_delta') return { ...previous, thought: `${previous.thought}${event.text || ''}` };
