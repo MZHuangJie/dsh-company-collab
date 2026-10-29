@@ -67,6 +67,7 @@ const GIT_ROOT = path.resolve(process.env.COMPANY_GIT_ROOT || path.join(DATA_DIR
 const KNOWLEDGE_ROOT = path.resolve(process.env.COMPANY_KNOWLEDGE_ROOT || path.join(DATA_DIR, 'knowledge'));
 const KNOWLEDGE_MAX_BYTES = 10 * 1024 * 1024;
 const VECTOR_DB_PATH = path.join(DATA_DIR, 'knowledge-vectors.sqlite');
+const UPLOAD_ROOT = path.resolve(process.env.COMPANY_UPLOAD_ROOT || path.join(DATA_DIR, 'uploads'));
 const EMBEDDING_URL = String(process.env.EMBEDDING_URL || '').trim();
 const EMBEDDING_MODEL = String(process.env.EMBEDDING_MODEL || 'BAAI/bge-small-zh-v1.5');
 const EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM || 512) || 512;
@@ -145,6 +146,7 @@ function emptyDb() {
     knowledgeEntities: [],
     knowledgeRelations: [],
     knowledgeVectors: [],
+    uploads: [],
   };
 }
 
@@ -352,6 +354,7 @@ function messageView(message) {
     approval: message.approvalId
       ? approvalView(db.data.approvals.find((entry) => entry.id === message.approvalId) ?? { id: message.approvalId })
       : null,
+    attachments: message.attachments ?? [],
     createdAt: message.createdAt,
   };
 }
@@ -1515,9 +1518,32 @@ class AcpHost {
       '',
       text,
     ].filter(Boolean).join('\n');
+    const promptBlocks = [{ type: 'text', text: prompt }];
+    const attachmentText = [];
+    for (const attachment of trigger.attachments ?? []) {
+      const entry = db.data.uploads.find((item) => item.id === attachment.id && item.groupId === this.group.id);
+      if (!entry || !fs.existsSync(entry.path)) continue;
+      if (/^image\//i.test(entry.mime || '')) {
+        if (entry.size <= 8 * 1024 * 1024) {
+          promptBlocks.push({
+            type: 'image',
+            mimeType: entry.mime,
+            data: fs.readFileSync(entry.path).toString('base64'),
+          });
+        }
+        continue;
+      }
+      try {
+        const extracted = knowledgeExt(entry.path, entry.name);
+        if (String(extracted || '').trim()) attachmentText.push(`[附件：${entry.name}]\n${String(extracted).slice(0, 6000)}`);
+      } catch {
+        attachmentText.push(`[附件：${entry.name}（${entry.mime}，${entry.size} 字节）]`);
+      }
+    }
+    if (attachmentText.length) promptBlocks[0].text += `\n\n${attachmentText.join('\n\n---\n\n')}`;
     await connection.request('session/prompt', {
       sessionId: this.sessionId,
-      prompt: [{ type: 'text', text: prompt }],
+      prompt: promptBlocks,
     }, 0);
     const state = this.runState;
     this.runState = null;
@@ -2693,6 +2719,67 @@ route('GET', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
   };
 });
 
+function attachmentView(entry) {
+  return {
+    id: entry.id,
+    name: entry.name,
+    mime: entry.mime || 'application/octet-stream',
+    size: entry.size || 0,
+    createdAt: entry.createdAt,
+  };
+}
+
+route('POST', /^\/api\/groups\/([a-z0-9_]+)\/attachments$/, async (req) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/attachments$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const group = db.group(match[1]);
+  if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  const body = await readJsonBody(req);
+  const name = str(body.name, '文件名', { max: 160 });
+  const raw = typeof body.dataBase64 === 'string' ? body.dataBase64 : '';
+  if (!raw) throw bad('缺少文件内容');
+  const buffer = Buffer.from(raw, 'base64');
+  if (!buffer.length) throw bad('文件为空');
+  if (buffer.length > 10 * 1024 * 1024) throw bad('附件超过 10MB 限制');
+  const id = randomId('att');
+  const ext = path.extname(name).slice(0, 16).replace(/[^.A-Za-z0-9_-]/g, '');
+  const dir = path.join(UPLOAD_ROOT, group.companyId, group.id);
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `${id}${ext}`);
+  fs.writeFileSync(filePath, buffer);
+  const entry = {
+    id,
+    companyId: group.companyId,
+    groupId: group.id,
+    name: cleanFileName(name) || `附件${ext}`,
+    mime: String(body.mime || 'application/octet-stream').slice(0, 160),
+    size: buffer.length,
+    path: filePath,
+    createdBy: auth.employee.id,
+    createdAt: now(),
+  };
+  db.data.uploads.push(entry);
+  await db.save();
+  return { attachment: attachmentView(entry) };
+});
+
+route('GET', /^\/api\/groups\/([a-z0-9_]+)\/attachments\/([a-z0-9_]+)$/, async (req, res) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/attachments\/([a-z0-9_]+)$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const group = db.group(match[1]);
+  if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  const entry = db.data.uploads.find((item) => item.id === match[2] && item.companyId === auth.company.id && item.groupId === group.id);
+  if (!entry || !fs.existsSync(entry.path)) throw notFound('附件不存在');
+  const stat = fs.statSync(entry.path);
+  res.writeHead(200, {
+    'content-type': entry.mime || 'application/octet-stream',
+    'content-length': stat.size,
+    'content-disposition': `inline; filename*=UTF-8''${encodeURIComponent(entry.name)}`,
+    'cache-control': 'private, max-age=3600',
+  });
+  fs.createReadStream(entry.path).pipe(res);
+});
+
 route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
   const auth = authenticate(req);
   const match = /^\/api\/groups\/([a-z0-9_]+)\/messages$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
@@ -2701,7 +2788,14 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
     throw notFound('群组不存在');
   }
   const body = await readJsonBody(req);
-  const text = str(body.text, '消息内容', { max: MAX_TEXT });
+  const text = typeof body.text === 'string' ? body.text.trim() : '';
+  if (text.length > MAX_TEXT) throw bad(`消息内容长度不能超过 ${MAX_TEXT} 个字符`);
+  const attachmentIds = Array.isArray(body.attachmentIds) ? body.attachmentIds.map(String).slice(0, 10) : [];
+  const attachments = attachmentIds
+    .map((id) => db.data.uploads.find((item) => item.id === id && item.companyId === auth.company.id && item.groupId === group.id))
+    .filter(Boolean)
+    .map(attachmentView);
+  if (!text && !attachments.length) throw bad('消息内容不能为空');
   const asAi = body.asAi === true;
   const ai = db.aiMember(auth.company.id);
   const author = asAi && ai ? ai : auth.employee;
@@ -2731,6 +2825,7 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
     text,
     authorId: author.id,
     kind: 'text',
+    attachments,
     createdAt: now(),
   };
   db.data.messages.push(message);

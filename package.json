@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-company-collab",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "type": "module",
   "description": "DSH company collaboration mode: companies, employee accounts, groups with an auto-joined AI member, persistent server-side DSH ACP host with SSE streaming activity and group approvals, and local Git AI tasks.",
   "license": "MIT",

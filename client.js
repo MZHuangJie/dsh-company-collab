@@ -95,6 +95,7 @@ window.__ModuleLoader__.load({
       'chat.empty': '选择一个群组开始协作',
       'chat.emptyDesc': '左侧选择群组，或新建一个群组并把同事与 AI 拉进来。',
       'chat.placeholder': '在「{group}」里说点什么…（@ 提及成员，Enter 发送）',
+      'chat.fileTooLarge': '文件超过 10MB：{name}',
       'chat.delete': '删除群组',
       'chat.deleteConfirm': '删除群组「{name}」？群聊历史、任务和服务端 Git 仓库会一起删除，且不可恢复。',
       'chat.deleted': '群组已删除',
@@ -350,6 +351,7 @@ window.__ModuleLoader__.load({
       'chat.empty': 'Pick a group to start collaborating',
       'chat.emptyDesc': 'Choose a group on the left, or create one with colleagues and the AI.',
       'chat.placeholder': 'Message #{group} (type @ to mention, Enter to send)',
+      'chat.fileTooLarge': 'File exceeds 10MB: {name}',
       'chat.delete': 'Delete group',
       'chat.deleteConfirm': 'Delete group "{name}"? Its chat history, tasks, and the server Git repository will be removed permanently.',
       'chat.deleted': 'Group deleted',
@@ -669,6 +671,16 @@ window.__ModuleLoader__.load({
 .dcc-composerBox textarea:focus,.dcc-composerBox textarea:focus-visible{outline:none!important;box-shadow:none!important;border:0!important}
 .dcc-composerBox textarea{width:100%;box-sizing:border-box;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.55;resize:none;outline:none;max-height:140px;padding:2px 2px 4px}
 .dcc-composerBox textarea::placeholder{color:var(--dsw-alias-label-tertiary)}
+.dcc-composerDragging{outline:1px dashed var(--dsw-alias-brand-primary);outline-offset:-4px}
+.dcc-attachList{display:flex;flex-wrap:wrap;gap:6px;padding:2px 0 6px}
+.dcc-attachChip{display:inline-flex;align-items:center;gap:5px;max-width:220px;padding:3px 5px;border:.5px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-layer-1);font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dcc-attachThumb{width:28px;height:28px;object-fit:cover;border-radius:5px}
+.dcc-attachName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcc-attachRemove{border:0;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:14px;line-height:1;padding:0 2px}
+.dcc-msgAttachments{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.dcc-msgImageLink{display:block;max-width:280px}
+.dcc-msgImage{display:block;max-width:280px;max-height:220px;border-radius:8px;border:.5px solid var(--dsw-alias-border-l1);object-fit:contain}
+.dcc-msgFile{display:inline-flex;align-items:center;gap:5px;padding:4px 7px;border:.5px solid var(--dsw-alias-border-l1);border-radius:7px;color:var(--dsw-alias-label-secondary);font-size:11px;text-decoration:none;background:var(--dsw-alias-bg-layer-1)}
 .dcc-composerRow{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .dcc-taskToggle{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:999px;border:.5px solid var(--dsw-alias-border-l2);background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;cursor:pointer;white-space:nowrap}
 .dcc-taskToggle:hover{background:var(--dsw-alias-interactive-bg-hover)}
@@ -1331,11 +1343,16 @@ window.__ModuleLoader__.load({
           const existing = snapshot.messages[groupId];
           await loadMessages(groupId, !existing || !existing.items.length);
         },
-        send: async (groupId, text, task) => {
-          const result = await act('/messages', { groupId, text, task });
+        send: async (groupId, text, options = false) => {
+          const payload = typeof options === 'object' && options ? options : { task: Boolean(options) };
+          const result = await act('/messages', { groupId, text, ...payload });
           await loadMessages(groupId, true);
           return result;
         },
+        uploadAttachment: (groupId, name, dataBase64, mime) =>
+          act('/attachments', { groupId, name, dataBase64, mime }).then((json) => json.attachment),
+        attachmentUrl: (groupId, attachmentId) =>
+          `/company-collab/api/attachment?groupId=${encodeURIComponent(groupId)}&id=${encodeURIComponent(attachmentId)}`,
         claimTask: (taskId) => act('/tasks/claim', { taskId }),
         completeTask: (taskId, note) => act('/tasks/complete', { taskId, note, asAi: true }),
         refreshMessages: (groupId, reset) => loadMessages(groupId, reset),
@@ -2542,6 +2559,38 @@ window.__ModuleLoader__.load({
             h('span', { className: 'dcc-msgTime' }, formatTime(message.createdAt)),
           ),
           h('div', { className: 'dcc-msgText' }, h(MarkdownText, { text: message.text })),
+          message.attachments?.length
+            ? h(
+                'div',
+                { className: 'dcc-msgAttachments' },
+                message.attachments.map((item) =>
+                  /^image\//i.test(item.mime || '')
+                    ? h('a', {
+                        key: item.id,
+                        className: 'dcc-msgImageLink',
+                        href: shared.store.attachmentUrl(message.groupId, item.id),
+                        target: '_blank',
+                        rel: 'noreferrer',
+                      }, h('img', {
+                        className: 'dcc-msgImage',
+                        src: shared.store.attachmentUrl(message.groupId, item.id),
+                        alt: item.name,
+                      }))
+                    : h(
+                        'a',
+                        {
+                          key: item.id,
+                          className: 'dcc-msgFile',
+                          href: shared.store.attachmentUrl(message.groupId, item.id),
+                          target: '_blank',
+                          rel: 'noreferrer',
+                        },
+                        h(Icon, { name: 'folder', size: 13 }),
+                        h('span', null, item.name),
+                      ),
+                ),
+              )
+            : null,
         ),
       );
     }
@@ -3055,6 +3104,9 @@ window.__ModuleLoader__.load({
       const bucket = snap.messages[groupId] ?? { items: [], loading: false, error: '' };
       const [draft, setDraft] = React.useState('');
       const [sending, setSending] = React.useState(false);
+      const [attachments, setAttachments] = React.useState([]);
+      const [uploading, setUploading] = React.useState(false);
+      const [dragging, setDragging] = React.useState(false);
       const [mention, setMention] = React.useState(null);
       const [live, setLive] = React.useState(null);
       const [showKnowledge, setShowKnowledge] = React.useState(false);
@@ -3161,6 +3213,7 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         setDraft('');
+        setAttachments([]);
       }, [groupId]);
 
       React.useEffect(() => {
@@ -3189,14 +3242,45 @@ window.__ModuleLoader__.load({
         );
       }
 
+      const addFiles = async (fileList) => {
+        const files = [...(fileList ?? [])].filter(Boolean);
+        if (!files.length) return;
+        setUploading(true);
+        try {
+          for (const file of files) {
+            if (file.size > 10 * 1024 * 1024) {
+              store.notify('error', t('chat.fileTooLarge', { name: file.name }));
+              continue;
+            }
+            const dataBase64 = await new Promise((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result || '').split(',')[1] || '');
+              reader.onerror = () => reject(reader.error);
+              reader.readAsDataURL(file);
+            });
+            const attachment = await store.uploadAttachment(group.id, file.name || '图片', dataBase64, file.type || 'application/octet-stream');
+            setAttachments((current) => [...current, attachment]);
+          }
+        } catch (failure) {
+          store.notify('error', t('notice.error', { message: String(failure.message || failure) }));
+        } finally {
+          setUploading(false);
+        }
+      };
+
+      const removeAttachment = (id) => {
+        setAttachments((current) => current.filter((item) => item.id !== id));
+      };
+
       const send = async () => {
         const text = draft.trim();
-        if (!text || sending) return;
+        if ((!text && !attachments.length) || sending || uploading) return;
         setSending(true);
         setMention(null);
         try {
-          await store.send(group.id, text);
+          await store.send(group.id, text, { attachmentIds: attachments.map((item) => item.id) });
           setDraft('');
+          setAttachments([]);
         } catch (failure) {
           store.notify('error', t('notice.error', { message: String(failure.message || failure) }));
         } finally {
@@ -3372,15 +3456,62 @@ window.__ModuleLoader__.load({
         live ? h(WorkingStatus, { t, startedAt: live.startedAt }) : null,
         h(
           'div',
-          { className: 'dcc-composer' },
+          {
+            className: 'dcc-composer',
+            onDragOver: (event) => {
+              event.preventDefault();
+              setDragging(true);
+            },
+            onDragLeave: () => setDragging(false),
+            onDrop: (event) => {
+              event.preventDefault();
+              setDragging(false);
+              addFiles(event.dataTransfer?.files);
+            },
+          },
           h(
             'div',
-            { className: 'dcc-composerBox' },
+            { className: cx('dcc-composerBox', dragging && 'dcc-composerDragging') },
+            attachments.length
+              ? h(
+                  'div',
+                  { className: 'dcc-attachList' },
+                  attachments.map((item) =>
+                    h(
+                      'div',
+                      { key: item.id, className: 'dcc-attachChip' },
+                      /^image\//i.test(item.mime || '')
+                        ? h('img', {
+                            className: 'dcc-attachThumb',
+                            src: store.attachmentUrl(group.id, item.id),
+                            alt: item.name,
+                          })
+                        : h(Icon, { name: 'folder', size: 13 }),
+                      h('span', { className: 'dcc-attachName' }, item.name),
+                      h(
+                        'button',
+                        { type: 'button', className: 'dcc-attachRemove', title: t('action.delete'), onClick: () => removeAttachment(item.id) },
+                        '×',
+                      ),
+                    ),
+                  ),
+                )
+              : null,
             h('textarea', {
               ref: textarea,
               rows: 1,
               value: draft,
               placeholder: t('chat.placeholder', { group: group.name }),
+              onPaste: (event) => {
+                const files = [...(event.clipboardData?.items ?? [])]
+                  .filter((item) => item.kind === 'file')
+                  .map((item) => item.getAsFile())
+                  .filter(Boolean);
+                if (files.length) {
+                  event.preventDefault();
+                  addFiles(files);
+                }
+              },
               onChange: (event) => {
                 const value = event.target.value;
                 setDraft(value);
@@ -3447,7 +3578,7 @@ window.__ModuleLoader__.load({
                   className: 'dcc-btn dcc-sendBtn',
                   'data-primary': '',
                   style: { marginLeft: 'auto' },
-                  disabled: !draft.trim() || sending,
+                  disabled: (!draft.trim() && !attachments.length) || sending || uploading,
                   onClick: send,
                 },
                 h(Icon, { name: 'send', size: 14 }),

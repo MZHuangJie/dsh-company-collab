@@ -663,9 +663,38 @@ class CompanyHub {
     return result.items ?? [];
   }
 
+  async uploadAttachment(groupId, name, dataBase64, mime) {
+    const result = await this.fetchJson(
+      'POST',
+      `/api/groups/${encodeURIComponent(groupId)}/attachments`,
+      { name, dataBase64, mime },
+      true,
+      120_000,
+    );
+    return result.attachment;
+  }
+
+  async attachmentResponse(groupId, attachmentId, res) {
+    await this.ensureGitToken();
+    const response = await fetch(
+      `${this.state.serverUrl}/api/groups/${encodeURIComponent(groupId)}/attachments/${encodeURIComponent(attachmentId)}`,
+      { headers: { authorization: `Bearer ${this.state.identity.token}` } },
+    );
+    if (!response.ok) throw new HubError(`附件读取失败：HTTP ${response.status}`);
+    res.writeHead(response.status, {
+      'content-type': response.headers.get('content-type') || 'application/octet-stream',
+      'content-length': response.headers.get('content-length') || '',
+      'cache-control': 'private, max-age=3600',
+    });
+    for await (const chunk of response.body) res.write(chunk);
+    res.end();
+  }
+
+
   async sendMessage(groupId, text, options = {}) {
     const body = { text: String(text || '').trim(), task: options.task === true };
     if (options.asAi === true) body.asAi = true;
+    if (Array.isArray(options.attachmentIds) && options.attachmentIds.length) body.attachmentIds = options.attachmentIds;
     const result = await this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/messages`, body);
     await this.refresh(true);
     return { message: result.message, task: result.task, state: this.snapshot() };
@@ -785,7 +814,7 @@ function handleApi(req, res) {
   const action = url.pathname.slice(ROUTE_PREFIX.length).replace(/^\/+/, '');
   const method = req.method ?? 'GET';
   const run = async () => {
-    const body = method === 'POST' ? await readBody(req, action === 'knowledge' ? 20 * 1024 * 1024 : 2 * 1024 * 1024) : {};
+    const body = method === 'POST' ? await readBody(req, action === 'knowledge' || action === 'attachments' ? 20 * 1024 * 1024 : 2 * 1024 * 1024) : {};
     if (!hub) throw new HubError('插件尚未就绪');
     const eventsMatch = method === 'GET' ? /^groups\/([a-z0-9_]+)\/events$/.exec(action) : null;
     if (eventsMatch) {
@@ -879,8 +908,15 @@ function handleApi(req, res) {
         return hub.createGroup(body.name, body.memberIds, body.repo).then((result) => ({ ok: true, ...result }));
       case 'POST messages':
         return hub
-          .sendMessage(body.groupId, body.text, { task: body.task, asAi: body.asAi })
+          .sendMessage(body.groupId, body.text, { task: body.task, asAi: body.asAi, attachmentIds: body.attachmentIds })
           .then((result) => ({ ok: true, ...result }));
+      case 'POST attachments': {
+        const attachment = await hub.uploadAttachment(body.groupId, body.name, body.dataBase64, body.mime);
+        return { ok: true, attachment };
+      }
+      case 'GET attachment':
+        await hub.attachmentResponse(url.searchParams.get('groupId') ?? '', url.searchParams.get('id') ?? '', res);
+        return {};
       case 'POST messages/read':
         return { ok: true, ...(await hub.markRead(body.groupId, body.seq)) };
       case 'POST tasks/claim':
