@@ -303,6 +303,14 @@ try {
 
 // ---------------------------------------------------------------- domain helpers
 
+function avatarValue(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (!text) return null;
+  if (!/^https?:\/\//i.test(text) && !/^data:image\//i.test(text)) return null;
+  return text.slice(0, 4000);
+}
+
 function publicEmployee(entry) {
   return {
     id: entry.id,
@@ -310,6 +318,7 @@ function publicEmployee(entry) {
     role: entry.role,
     isAi: Boolean(entry.isAi),
     companyId: entry.companyId,
+    avatarUrl: entry.avatarUrl ?? null,
     linked: Boolean(entry.externalId),
     createdAt: entry.createdAt,
   };
@@ -346,6 +355,7 @@ function messageView(message) {
     authorId: message.authorId,
     authorName: author?.name ?? '未知成员',
     authorIsAi: Boolean(author?.isAi),
+    authorAvatarUrl: author?.avatarUrl ?? null,
     kind: message.kind,
     taskId: message.taskId ?? null,
     runId: message.runId ?? null,
@@ -2086,6 +2096,7 @@ route('POST', /^\/api\/companies$/, async (req) => {
   const employeeName = str(body.employeeName, '你的姓名', { max: 40 });
   const externalId = typeof body.externalId === 'string' && body.externalId.trim() ? str(body.externalId, '账号标识', { max: 200 }) : null;
   const contact = typeof body.contact === 'string' && body.contact.trim() ? str(body.contact, '联系方式', { max: 120 }) : '';
+  const avatarUrl = avatarValue(body.avatarUrl);
   if (db.data.companies.some((entry) => entry.name.toLowerCase() === companyName.toLowerCase())) {
     throw bad('同名公司已存在，请换一个名称');
   }
@@ -2099,6 +2110,7 @@ route('POST', /^\/api\/companies$/, async (req) => {
     isAi: false,
     externalId,
     contact,
+    avatarUrl,
     createdAt: now(),
   };
   db.data.employees.push(employee);
@@ -2153,11 +2165,13 @@ route('POST', /^\/api\/companies\/([a-z0-9_]+)\/join$/, async (req) => {
   const externalId = str(body.externalId, '账号标识', { max: 200 });
   const name = typeof body.name === 'string' && body.name.trim() ? str(body.name, '姓名', { max: 40 }) : '成员';
   const contact = typeof body.contact === 'string' ? str(body.contact, '联系方式', { max: 120 }) : '';
+  const avatarUrl = avatarValue(body.avatarUrl);
   const suppliedSecret = typeof body.deviceSecret === 'string' ? body.deviceSecret : '';
   const ai = db.aiMember(company.id);
   const existing = db.companyEmployees(company.id).find((entry) => entry.externalId === externalId && !entry.isAi);
   if (existing) {
     if (suppliedSecret && existing.deviceSecretHash === hashDeviceSecret(existing.id, suppliedSecret)) {
+      existing.avatarUrl = avatarUrl || existing.avatarUrl || null;
       const token = db.issueSession(existing.id);
       await db.save();
       return {
@@ -2172,6 +2186,7 @@ route('POST', /^\/api\/companies\/([a-z0-9_]+)\/join$/, async (req) => {
       const deviceSecret = newDeviceSecret();
       existing.deviceSecretHash = hashDeviceSecret(existing.id, deviceSecret);
       if (name && name !== '成员') existing.name = name;
+      existing.avatarUrl = avatarUrl || existing.avatarUrl || null;
       const token = db.issueSession(existing.id);
       await db.save();
       return {
@@ -2192,6 +2207,7 @@ route('POST', /^\/api\/companies\/([a-z0-9_]+)\/join$/, async (req) => {
     isAi: false,
     externalId,
     contact,
+    avatarUrl,
     createdAt: now(),
   };
   const deviceSecret = newDeviceSecret();
@@ -2225,6 +2241,7 @@ route('POST', /^\/api\/auth\/login$/, async (req) => {
   const companyId = str(body.companyId, '公司 ID', { max: 80 });
   const employeeName = str(body.employeeName, '姓名', { max: 40 });
   const accessCode = str(body.accessCode, '访问码', { max: 20 }).toUpperCase();
+  const avatarUrl = avatarValue(body.avatarUrl);
   const company = db.company(companyId);
   if (!company) throw notFound('公司不存在，请核对公司 ID');
   const employee = db.companyEmployees(company.id).find((entry) => entry.name === employeeName && !entry.isAi);
@@ -2232,6 +2249,7 @@ route('POST', /^\/api\/auth\/login$/, async (req) => {
   if (!employee.accessCodeHash || employee.accessCodeHash !== hashAccessCode(employee.id, accessCode)) {
     throw forbidden('访问码不正确');
   }
+  employee.avatarUrl = avatarUrl || employee.avatarUrl || null;
   const token = db.issueSession(employee.id);
   await db.save();
   const ai = db.aiMember(company.id);
@@ -2246,6 +2264,14 @@ route('POST', /^\/api\/auth\/login$/, async (req) => {
 route('GET', /^\/api\/me$/, async (req, res) => {
   const auth = authenticate(req);
   return { company: publicCompany(auth.company), employee: publicEmployee(auth.employee) };
+});
+
+route('POST', /^\/api\/me\/avatar$/, async (req) => {
+  const auth = authenticate(req);
+  const body = await readJsonBody(req);
+  auth.employee.avatarUrl = avatarValue(body.avatarUrl);
+  await db.save();
+  return { employee: publicEmployee(auth.employee) };
 });
 
 route('GET', /^\/api\/state$/, async (req) => stateView(authenticate(req)));

@@ -636,6 +636,7 @@ window.__ModuleLoader__.load({
 .dcc-avatar{width:24px;height:24px;flex:none;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-primary);font-size:10.5px;font-weight:600;letter-spacing:.02em;background:color-mix(in srgb,var(--dsw-alias-brand-primary) 12%,var(--dsw-alias-bg-layer-2));overflow:hidden}
 .dcc-avatar[data-ai]{background:color-mix(in srgb,var(--dsw-alias-brand-primary) 22%,transparent);color:var(--dsw-alias-brand-primary);box-shadow:inset 0 0 0 .5px color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,transparent)}
 .dcc-avatarSm{width:20px;height:20px;font-size:9.5px}
+.dcc-avatarImg{width:100%;height:100%;display:block;object-fit:cover}
 .dcc-aiTag{flex:none;font-size:9px;font-weight:600;letter-spacing:.04em;padding:1px 5px;border-radius:999px;color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,transparent);border:.5px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 30%,transparent)}
 .dcc-chat{min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--dsw-alias-bg-base);overflow:hidden}
 .dcc-chatHead{flex:none;display:flex;flex-direction:column;gap:6px;padding:10px 16px 8px;border-bottom:.5px solid var(--dsw-alias-border-l1)}
@@ -1168,11 +1169,24 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function Avatar({ name, ai, small }) {
+    function Avatar({ name, ai, small, avatarUrl }) {
+      const [failed, setFailed] = React.useState(false);
+      React.useEffect(() => setFailed(false), [avatarUrl]);
       return h(
         'span',
         { className: cx('dcc-avatar', small && 'dcc-avatarSm'), 'data-ai': ai ? '' : undefined, 'aria-hidden': true },
-        ai ? h(Icon, { name: 'sparkle', size: small ? 12 : 14 }) : initialOf(name),
+        ai
+          ? h(Icon, { name: 'sparkle', size: small ? 12 : 14 })
+          : avatarUrl && !failed
+            ? h('img', {
+                className: 'dcc-avatarImg',
+                src: avatarUrl,
+                alt: '',
+                loading: 'lazy',
+                referrerPolicy: 'no-referrer',
+                onError: () => setFailed(true),
+              })
+            : initialOf(name),
       );
     }
 
@@ -2159,7 +2173,7 @@ window.__ModuleLoader__.load({
                       checked: selected.has(person.id),
                       onChange: () => toggle(person.id),
                     }),
-                    h(Avatar, { name: person.name, small: true }),
+                    h(Avatar, { name: person.name, small: true, avatarUrl: person.avatarUrl }),
                     h(
                       'span',
                       { className: 'dcc-grow' },
@@ -2390,7 +2404,7 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { key: member.id, className: 'dcc-memberRow' },
-                      h(Avatar, { name: member.name, small: true }),
+                      h(Avatar, { name: member.name, small: true, avatarUrl: member.avatarUrl }),
                       h(
                         'div',
                         { className: 'dcc-memberMain' },
@@ -2564,7 +2578,7 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { key: person.id, className: 'dcc-row' },
-                      h(Avatar, { name: person.name, ai: person.isAi, small: true }),
+                      h(Avatar, { name: person.name, ai: person.isAi, small: true, avatarUrl: person.avatarUrl }),
                       h(
                         'span',
                         { className: 'dcc-rowMain' },
@@ -2603,7 +2617,7 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { key: person.id, className: 'dcc-row' },
-                      h(Avatar, { name: person.name, ai: person.isAi, small: true }),
+                      h(Avatar, { name: person.name, ai: person.isAi, small: true, avatarUrl: person.avatarUrl }),
                       h(
                         'span',
                         { className: 'dcc-rowMain' },
@@ -2711,7 +2725,7 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { className: cx('dcc-msg', isSelf && 'dcc-msgSelf') },
-        h(Avatar, { name: message.authorName, ai: message.authorIsAi }),
+        h(Avatar, { name: message.authorName, ai: message.authorIsAi, avatarUrl: message.authorAvatarUrl }),
         h(
           'div',
           { className: 'dcc-msgBody' },
@@ -3768,7 +3782,7 @@ window.__ModuleLoader__.load({
               h(
                 'span',
                 { key: member.id, className: 'dcc-chip', title: member.role || '' },
-                h(Avatar, { name: member.name, ai: member.isAi, small: true }),
+                h(Avatar, { name: member.name, ai: member.isAi, small: true, avatarUrl: member.avatarUrl }),
                 member.name,
                 member.isAi ? h(AiTag, { t }) : null,
               ),

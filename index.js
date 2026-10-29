@@ -44,6 +44,7 @@ async function resolveAccountIdentity(ctx) {  const account = ctx?.get?.('deepse
           externalId: `dsh:${profile.id}`,
           name: profile.name || profile.contact || '成员',
           contact: profile.contact || '',
+          avatarUrl: profile.avatarUrl || '',
           source: 'dsh',
           profileState: 'ok',
         };
@@ -363,7 +364,7 @@ class CompanyHub {
     const result = await this.fetchJson(
       'POST',
       '/api/companies',
-      { companyName: name, employeeName: person, externalId: account.externalId, contact: account.contact },
+      { companyName: name, employeeName: person, externalId: account.externalId, contact: account.contact, avatarUrl: account.avatarUrl || '' },
       false,
     );
     this.state.identity = {
@@ -396,7 +397,7 @@ class CompanyHub {
     const result = await this.fetchJson(
       'POST',
       `/api/companies/${encodeURIComponent(id)}/join`,
-      { externalId: account.externalId, name: account.name, contact: account.contact, deviceSecret },
+      { externalId: account.externalId, name: account.name, contact: account.contact, avatarUrl: account.avatarUrl || '', deviceSecret },
       false,
     );
     if (result.deviceSecret) {
@@ -630,6 +631,7 @@ class CompanyHub {
 
   async login(companyId, employeeName, accessCode) {
     if (!this.state.serverUrl) throw new HubError('请先填写并连接服务器地址');
+    const account = await this.refreshAccount().catch(() => ({}));
     const result = await this.fetchJson(
       'POST',
       '/api/auth/login',
@@ -637,6 +639,7 @@ class CompanyHub {
         companyId: String(companyId || '').trim(),
         employeeName: String(employeeName || '').trim(),
         accessCode: String(accessCode || '').trim().toUpperCase(),
+        avatarUrl: account.avatarUrl || '',
       },
       false,
     );
@@ -671,7 +674,22 @@ class CompanyHub {
     this.remote = state;
     this.remoteAt = now();
     await this.maybeLinkAccount(state).catch(() => {});
+    await this.syncAvatar(state).catch(() => {});
     return state;
+  }
+
+  async syncAvatar(remote) {
+    const employee = remote?.employee;
+    if (!employee) return;
+    const account = await this.refreshAccount().catch(() => null);
+    const avatarUrl = account?.avatarUrl || '';
+    if (!avatarUrl || employee.avatarUrl === avatarUrl) return;
+    const result = await this.fetchJson('POST', '/api/me/avatar', { avatarUrl });
+    if (result.employee) {
+      this.remote.employee = result.employee;
+      if (this.state.identity) this.state.identity.employee = result.employee;
+      saveState(this.state);
+    }
   }
 
   /** Bind the signed-in DSH account to a legacy employee row that has no device link yet. */
@@ -870,6 +888,7 @@ class CompanyHub {
         ? {
             name: this.account.name,
             contact: this.account.contact,
+            avatarUrl: this.account.avatarUrl || '',
             source: this.account.source,
           }
         : null,
