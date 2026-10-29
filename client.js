@@ -3188,12 +3188,14 @@ window.__ModuleLoader__.load({
 
     function AccountDialog({ t, snap, onClose }) {
       const store = shared.store;
-      const accounts = snap.accounts ?? [];
+      const data = snap.data ?? {};
+      const accounts = data.accounts ?? [];
+      const activeAccount = data.activeAccount ?? '';
       const [mode, setMode] = React.useState('login');
       const [serverUrl, setServerUrl] = React.useState('');
       const [companyId, setCompanyId] = React.useState('');
       const [companyName, setCompanyName] = React.useState('');
-      const [employeeName, setEmployeeName] = React.useState(snap.identity?.employee?.name ?? '');
+      const [employeeName, setEmployeeName] = React.useState(data.identity?.employee?.name ?? '');
       const [accessCode, setAccessCode] = React.useState('');
       const [busy, setBusy] = React.useState(false);
       const [error, setError] = React.useState('');
@@ -3253,7 +3255,7 @@ window.__ModuleLoader__.load({
                       key: account.key,
                       type: 'button',
                       className: 'dcc-accountItem',
-                      'data-active': account.key === snap.activeAccount ? '' : undefined,
+                      'data-active': account.key === activeAccount ? '' : undefined,
                       disabled: busy,
                       onClick: () => switchTo(account.key),
                     },
@@ -3264,7 +3266,7 @@ window.__ModuleLoader__.load({
                       h('span', { className: 'dcc-accountName' }, account.companyName || account.companyId),
                       h('span', { className: 'dcc-note' }, `${account.serverUrl} · ${account.employeeName || ''}`),
                     ),
-                    account.key === snap.activeAccount ? h('span', { className: 'dcc-accountBadge' }, t('accounts.current')) : null,
+                    account.key === activeAccount ? h('span', { className: 'dcc-accountBadge' }, t('accounts.current')) : null,
                   ),
                 ),
               )
