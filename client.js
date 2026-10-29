@@ -647,6 +647,11 @@ window.__ModuleLoader__.load({
 .dcc-chip{display:inline-flex;align-items:center;gap:4px;height:21px;padding:0 7px;border-radius:999px;border:.5px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:10.5px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dcc-messages{flex:1;min-height:0;overflow-y:auto;padding:14px 16px 8px;display:flex;flex-direction:column;gap:14px}
 .dcc-msg{display:flex;gap:10px;min-width:0;padding:2px 0}
+.dcc-msgSelf{flex-direction:row-reverse}
+.dcc-msgSelf .dcc-msgBody{align-items:flex-end}
+.dcc-msgSelf .dcc-msgHead{justify-content:flex-end;align-self:stretch}
+.dcc-msgSelf .dcc-msgText{text-align:right;align-self:stretch}
+.dcc-msgSelf .dcc-msgAttachments{justify-content:flex-end;align-self:stretch}
 .dcc-msgBody{flex:1;min-width:0;display:flex;flex-direction:column;gap:5px}
 .dcc-msgHead{display:flex;align-items:center;gap:7px;min-width:0}
 .dcc-msgName{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -2694,7 +2699,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function MessageRow({ t, message, onDecide }) {
+    function MessageRow({ t, message, onDecide, meId }) {
       if (message.approval) return h(ApprovalCard, { t, message, onDecide });
       if (message.kind === 'system') {
         return h('div', { className: 'dcc-msgSystem' }, message.text);
@@ -2702,9 +2707,10 @@ window.__ModuleLoader__.load({
       if (message.kind === 'activity') {
         return h('div', { className: 'dcc-runItem' }, message.text);
       }
+      const isSelf = Boolean(meId && message.authorId === meId && !message.authorIsAi);
       return h(
         'div',
-        { className: 'dcc-msg' },
+        { className: cx('dcc-msg', isSelf && 'dcc-msgSelf') },
         h(Avatar, { name: message.authorName, ai: message.authorIsAi }),
         h(
           'div',
@@ -2922,7 +2928,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function ConversationView({ t, items, onDecide }) {
+    function ConversationView({ t, items, onDecide, meId }) {
       const rows = buildChatRows(items);
       return h(
         'div',
@@ -2939,10 +2945,10 @@ window.__ModuleLoader__.load({
                   finishedAt: row.finishedAt,
                 }),
                 row.finalMessage
-                  ? h(MessageRow, { key: row.finalMessage.id, t, message: row.finalMessage, onDecide })
+                  ? h(MessageRow, { key: row.finalMessage.id, t, message: row.finalMessage, onDecide, meId })
                   : null,
               )
-            : h(MessageRow, { key: row.message.id, t, message: row.message, onDecide }),
+            : h(MessageRow, { key: row.message.id, t, message: row.message, onDecide, meId }),
         ),
       );
     }
@@ -3792,7 +3798,7 @@ window.__ModuleLoader__.load({
           { className: 'dcc-messages dcc-scrollThin', ref: scroller },
           bucket.error ? h(ErrorLine, { text: bucket.error }) : null,
           bucket.items.length || live
-            ? h(React.Fragment, null, h(ConversationView, { t, items: bucket.items, onDecide: decideApproval }), live ? h(LiveRun, { t, live }) : null)
+            ? h(React.Fragment, null, h(ConversationView, { t, items: bucket.items, onDecide: decideApproval, meId: data.identity?.employee?.id }), live ? h(LiveRun, { t, live }) : null)
             : h(
                 'div',
                 { className: 'dcc-empty', style: { height: 'auto', paddingTop: 40 } },
