@@ -1,0 +1,51 @@
+{
+  "name": "@local/dsh-company-collab",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "DSH company collaboration mode: companies, employee accounts, contacts, groups with an auto-joined AI member, per-group Git repositories, and local AI task execution.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MZHuangJie/dsh-company-collab.git"
+  },
+  "homepage": "https://github.com/MZHuangJie/dsh-company-collab#readme",
+  "bugs": {
+    "url": "https://github.com/MZHuangJie/dsh-company-collab/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "company",
+    "collaboration",
+    "git"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "server/company-hub-server.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  }
+}

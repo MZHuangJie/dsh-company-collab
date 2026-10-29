@@ -1,0 +1,8 @@
+node_modules/
+company-hub-data/
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+conflict/
+.state/
