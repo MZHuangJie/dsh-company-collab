@@ -99,6 +99,10 @@ window.__ModuleLoader__.load({
       'groups.unread': '{count} 条未读',
       'groups.aiIn': 'AI 已加入',
       'groups.workspace': '共享工作区',
+      'direct.title': '单聊',
+      'direct.start': '发起单聊',
+      'direct.empty': '还没有单聊',
+      'direct.emptyHint': '从通讯录或公司成员里点单聊开始。',
       'contacts.title': '通讯录',
       'contacts.directory': '公司成员',
       'contacts.empty': '通讯录还是空的',
@@ -112,6 +116,7 @@ window.__ModuleLoader__.load({
       'chat.placeholder': '在「{group}」里说点什么…（默认发给 AI，Enter 发送）',
       'chat.placeholderAi': '在「{group}」里说点什么…（发给 AI，Enter 发送）',
       'chat.placeholderPeople': '在「{group}」里说点什么…（发给同事，@AI 可询问）',
+      'chat.placeholderDirect': '给「{group}」发消息…',
       'chat.toAi': 'AI',
       'chat.toPeople': '同事',
       'chat.replyModeHint': '切换对话对象；输入 @ 时以 @ 为准',
@@ -380,6 +385,10 @@ window.__ModuleLoader__.load({
       'groups.unread': '{count} unread',
       'groups.aiIn': 'AI joined',
       'groups.workspace': 'Shared workspace',
+      'direct.title': 'Direct messages',
+      'direct.start': 'Start direct chat',
+      'direct.empty': 'No direct chats yet',
+      'direct.emptyHint': 'Start one from Contacts or Directory.',
       'contacts.title': 'Contacts',
       'contacts.directory': 'Directory',
       'contacts.empty': 'No contacts yet',
@@ -393,6 +402,7 @@ window.__ModuleLoader__.load({
       'chat.placeholder': 'Message #{group} (sent to AI by default, Enter to send)',
       'chat.placeholderAi': 'Message #{group} (to AI, Enter to send)',
       'chat.placeholderPeople': 'Message #{group} (to colleagues, @AI to ask)',
+      'chat.placeholderDirect': 'Message {group}…',
       'chat.toAi': 'AI',
       'chat.toPeople': 'Colleagues',
       'chat.replyModeHint': 'Switch recipient; @ mentions override this',
@@ -1420,6 +1430,15 @@ window.__ModuleLoader__.load({
           const existing = snapshot.messages[groupId];
           await loadMessages(groupId, !existing || !existing.items.length);
         },
+        async openDirect(employeeId) {
+          const result = await act('/directs', { employeeId });
+          const groupId = result?.group?.id;
+          if (groupId) {
+            publish({ selectedGroup: groupId });
+            await loadMessages(groupId, true);
+          }
+          return result;
+        },
         send: async (groupId, text, options = false) => {
           const payload = typeof options === 'object' && options ? options : { task: Boolean(options) };
           const result = await act('/messages', { groupId, text, ...payload });
@@ -2409,7 +2428,12 @@ window.__ModuleLoader__.load({
       const [peopleTab, setPeopleTab] = React.useState('contacts');
       const me = data.identity?.employee;
       const needle = query.trim().toLowerCase();
-      const groups = (data.groups ?? []).filter((group) => !needle || group.name.toLowerCase().includes(needle));
+      const groups = (data.groups ?? [])
+        .filter((group) => (group.kind || 'group') !== 'direct')
+        .filter((group) => !needle || group.name.toLowerCase().includes(needle));
+      const directs = (data.groups ?? [])
+        .filter((group) => group.kind === 'direct')
+        .filter((group) => !needle || group.name.toLowerCase().includes(needle));
       const contacts = (data.contacts ?? []).filter((person) => !needle || person.name.toLowerCase().includes(needle));
       const directory = (data.directory ?? [])
         .filter((person) => person.id !== me?.id)
@@ -2484,6 +2508,37 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'dcc-railSection' },
+            h('div', { className: 'dcc-railHead' }, h('span', {}, t('direct.title'))),
+            directs.length
+              ? directs.map((group) =>
+                  h(
+                    'button',
+                    {
+                      key: group.id,
+                      type: 'button',
+                      className: 'dcc-row',
+                      'data-active': selected === group.id ? '' : undefined,
+                      onClick: () => store.openGroup(group.id),
+                    },
+                    h(Avatar, { name: group.name, small: true }),
+                    h(
+                      'span',
+                      { className: 'dcc-rowMain' },
+                      h('span', { className: 'dcc-rowName' }, h('span', {}, group.name)),
+                      h(
+                        'span',
+                        { className: 'dcc-rowSub' },
+                        group.lastMessage ? group.lastMessage.text : t('direct.emptyHint'),
+                      ),
+                    ),
+                    group.unread ? h('span', { className: 'dcc-unread' }, group.unread > 99 ? '99+' : group.unread) : null,
+                  ),
+                )
+              : h('div', { className: 'dcc-note', style: { padding: '4px 6px' } }, t('direct.empty')),
+          ),
+          h(
+            'div',
+            { className: 'dcc-railSection' },
             h(
               'div',
               { className: 'dcc-railHead' },
@@ -2511,6 +2566,20 @@ window.__ModuleLoader__.load({
                         h('span', { className: 'dcc-rowName' }, h('span', {}, person.name)),
                         h('span', { className: 'dcc-rowSub' }, person.role || t('role.member')),
                       ),
+                      person.isAi
+                        ? null
+                        : h(
+                            'button',
+                            {
+                              type: 'button',
+                              className: 'dcc-iconBtn',
+                              title: t('direct.start'),
+                              'aria-label': t('direct.start'),
+                              style: { width: 22, height: 22 },
+                              onClick: () => store.openDirect(person.id).catch((failure) => store.notify('error', String(failure.message || failure))),
+                            },
+                            h(Icon, { name: 'chat', size: 12 }),
+                          ),
                       h(
                         'button',
                         {
@@ -2538,6 +2607,20 @@ window.__ModuleLoader__.load({
                         h('span', { className: 'dcc-rowName' }, h('span', {}, person.name), person.isAi ? h(AiTag, { t }) : null),
                         h('span', { className: 'dcc-rowSub' }, person.role || t('role.member')),
                       ),
+                      person.isAi
+                        ? null
+                        : h(
+                            'button',
+                            {
+                              type: 'button',
+                              className: 'dcc-iconBtn',
+                              title: t('direct.start'),
+                              'aria-label': t('direct.start'),
+                              style: { width: 22, height: 22 },
+                              onClick: () => store.openDirect(person.id).catch((failure) => store.notify('error', String(failure.message || failure))),
+                            },
+                            h(Icon, { name: 'chat', size: 12 }),
+                          ),
                       contactIds.has(person.id) || person.isAi
                         ? null
                         : h(
@@ -3359,6 +3442,7 @@ window.__ModuleLoader__.load({
       const data = snap.data;
       const groupId = snap.selectedGroup;
       const group = (data.groups ?? []).find((entry) => entry.id === groupId);
+      const isDirect = group?.kind === 'direct';
       const bucket = snap.messages[groupId] ?? { items: [], loading: false, error: '' };
       const [draft, setDraft] = React.useState('');
       const [sending, setSending] = React.useState(false);
@@ -3538,7 +3622,7 @@ window.__ModuleLoader__.load({
         setSending(true);
         setMention(null);
         try {
-          await store.send(group.id, text, { attachmentIds: attachments.map((item) => item.id), toAi: replyMode === 'ai' });
+          await store.send(group.id, text, { attachmentIds: attachments.map((item) => item.id), toAi: isDirect ? false : replyMode === 'ai' });
           setDraft('');
           setAttachments([]);
         } catch (failure) {
@@ -3601,23 +3685,27 @@ window.__ModuleLoader__.load({
             h('span', { className: 'dcc-chatTitle' }, group.name),
             h('span', { className: 'dcc-chatMeta' }, t('groups.members', { count: group.members.length })),
             group.unread ? h('span', { className: 'dcc-chatMeta' }, t('groups.unread', { count: group.unread })) : null,
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'dcc-miniBtn',
-                title: t('knowledge.title'),
-                onClick: () => setShowKnowledge(true),
-              },
-              h(Icon, { name: 'book', size: 12 }),
-              t('knowledge.button'),
-            ),
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'dcc-miniBtn',
-                title: t('repo.buttonHint'),
+            isDirect
+              ? null
+              : h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dcc-miniBtn',
+                    title: t('knowledge.title'),
+                    onClick: () => setShowKnowledge(true),
+                  },
+                  h(Icon, { name: 'book', size: 12 }),
+                  t('knowledge.button'),
+                ),
+            isDirect
+              ? null
+              : h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dcc-miniBtn',
+                    title: t('repo.buttonHint'),
                 onClick: async () => {
                   try {
                     const status = await store.repoStatus(group.id);
@@ -3763,7 +3851,7 @@ window.__ModuleLoader__.load({
               ref: textarea,
               rows: 1,
               value: draft,
-              placeholder: t(replyMode === 'ai' ? 'chat.placeholderAi' : 'chat.placeholderPeople', { group: group.name }),
+              placeholder: t(isDirect ? 'chat.placeholderDirect' : replyMode === 'ai' ? 'chat.placeholderAi' : 'chat.placeholderPeople', { group: group.name }),
               onPaste: (event) => {
                 const files = [...(event.clipboardData?.items ?? [])]
                   .filter((item) => item.kind === 'file')
@@ -3833,18 +3921,20 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'dcc-composerRow' },
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    className: 'dcc-replyToggle',
-                    'data-mode': replyMode,
-                    title: t('chat.replyModeHint'),
-                    onClick: () => setReplyMode((value) => (value === 'ai' ? 'people' : 'ai')),
-                  },
-                  h(Icon, { name: replyMode === 'ai' ? 'sparkle' : 'users', size: 12 }),
-                  t(replyMode === 'ai' ? 'chat.toAi' : 'chat.toPeople'),
-                ),
+                isDirect
+                  ? null
+                  : h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dcc-replyToggle',
+                        'data-mode': replyMode,
+                        title: t('chat.replyModeHint'),
+                        onClick: () => setReplyMode((value) => (value === 'ai' ? 'people' : 'ai')),
+                      },
+                      h(Icon, { name: replyMode === 'ai' ? 'sparkle' : 'users', size: 12 }),
+                      t(replyMode === 'ai' ? 'chat.toAi' : 'chat.toPeople'),
+                    ),
                 h(
                   'button',
                   {

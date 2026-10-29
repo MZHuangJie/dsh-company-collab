@@ -2017,9 +2017,13 @@ function stateView(auth) {
       const last = messages[messages.length - 1];
       const readSeq = db.readMark(employee.id, group.id);
       const unread = messages.filter((entry) => entry.seq > readSeq && entry.authorId !== employee.id).length;
+      const isDirect = group.kind === 'direct';
+      const peer = isDirect ? db.employee(group.memberIds.find((id) => id !== employee.id)) : null;
       return {
         id: group.id,
-        name: group.name,
+        name: isDirect ? peer?.name ?? '单聊' : group.name,
+        kind: group.kind || 'group',
+        directPeerId: isDirect ? peer?.id ?? null : null,
         createdAt: group.createdAt,
         visibility: group.visibility === 'public' ? 'public' : 'private',
         memberIds: group.memberIds,
@@ -2669,6 +2673,40 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/repo-head$/, async (req) => {
   return { branch };
 });
 
+route('POST', /^\/api\/directs$/, async (req) => {
+  const auth = authenticate(req);
+  const body = await readJsonBody(req);
+  const employeeId = str(body.employeeId, '同事', { max: 80 });
+  const target = db.employee(employeeId);
+  if (!target || target.companyId !== auth.company.id || target.isAi || target.id === auth.employee.id) {
+    throw bad('请选择公司里的同事');
+  }
+  let group = db.data.groups.find(
+    (entry) =>
+      entry.companyId === auth.company.id &&
+      entry.kind === 'direct' &&
+      entry.memberIds.length === 2 &&
+      entry.memberIds.includes(auth.employee.id) &&
+      entry.memberIds.includes(target.id),
+  );
+  if (!group) {
+    group = {
+      id: randomId('dir'),
+      companyId: auth.company.id,
+      kind: 'direct',
+      name: '',
+      memberIds: [auth.employee.id, target.id],
+      createdBy: auth.employee.id,
+      createdAt: now(),
+      seq: 0,
+      repoPath: null,
+    };
+    db.data.groups.push(group);
+    await db.save();
+  }
+  return { group: { id: group.id, kind: 'direct', employeeId: target.id, employeeName: target.name } };
+});
+
 route('POST', /^\/api\/groups$/, async (req) => {
   const auth = authenticate(req);
   const body = await readJsonBody(req);
@@ -2686,6 +2724,7 @@ route('POST', /^\/api\/groups$/, async (req) => {
     id: randomId('grp'),
     companyId: auth.company.id,
     name,
+    kind: 'group',
     memberIds,
     createdBy: auth.employee.id,
     createdAt: now(),
@@ -2850,7 +2889,7 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
     .filter(Boolean);
   const mentionsHuman = humanNames.some((name) => text.includes(`@${name}`));
   const toAi = body.toAi === undefined ? true : body.toAi === true;
-  const shouldReply = author.isAi === false && (mentionsAi || (!mentionsHuman && toAi));
+  const shouldReply = author.isAi === false && group.kind !== 'direct' && (mentionsAi || (!mentionsHuman && toAi));
   const approvalMatch = author.isAi === false ? /^\s*(允许|批准|拒绝|approve|reject)\s+([a-z0-9]{6})\s*$/i.exec(text) : null;
   if (approvalMatch) {
     const approval = db.data.approvals
