@@ -2341,7 +2341,9 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
   const asAi = body.asAi === true;
   const ai = db.aiMember(auth.company.id);
   const author = asAi && ai ? ai : auth.employee;
-  const mentioned = author.isAi === false && /@\s*ai\b|@\s*AI\b|@\s*Ai\b|AI\s*助理/i.test(text);
+  const aiName = String(ai?.name || '').trim();
+  const nameMention = Boolean(aiName && (text.includes(`@${aiName}`) || text.includes(`@ ${aiName}`)));
+  const mentioned = author.isAi === false && (nameMention || /@\s*ai\b|@\s*AI\b|@\s*Ai\b|AI\s*助理/i.test(text));
   const approvalMatch = author.isAi === false ? /^\s*(允许|批准|拒绝|approve|reject)\s+([a-z0-9]{6})\s*$/i.exec(text) : null;
   if (approvalMatch) {
     const approval = db.data.approvals
