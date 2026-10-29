@@ -65,6 +65,9 @@ const DB_PATH = path.join(DATA_DIR, 'db.json');
 const GIT_ROOT = path.resolve(process.env.COMPANY_GIT_ROOT || path.join(DATA_DIR, 'git'));
 const KNOWLEDGE_ROOT = path.resolve(process.env.COMPANY_KNOWLEDGE_ROOT || path.join(DATA_DIR, 'knowledge'));
 const KNOWLEDGE_MAX_BYTES = 10 * 1024 * 1024;
+const EMBEDDING_URL = String(process.env.EMBEDDING_URL || '').trim();
+const EMBEDDING_MODEL = String(process.env.EMBEDDING_MODEL || 'BAAI/bge-small-zh-v1.5');
+const EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM || 512) || 512;
 
 // ---------------------------------------------------------------- utilities
 
@@ -139,6 +142,7 @@ function emptyDb() {
     knowledgeDocs: [],
     knowledgeEntities: [],
     knowledgeRelations: [],
+    knowledgeVectors: [],
   };
 }
 
@@ -773,7 +777,120 @@ function knowledgeDocTime(doc) {
   return value;
 }
 
-function searchKnowledge(companyId, groupId, query, limit = 5) {
+async function embedKnowledgeTexts(texts) {
+  if (!EMBEDDING_URL || !Array.isArray(texts) || !texts.length) return null;
+  const output = [];
+  for (let offset = 0; offset < texts.length; offset += 16) {
+    const batch = texts.slice(offset, offset + 16);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 45_000);
+    try {
+      const response = await fetch(EMBEDDING_URL, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ texts: batch }),
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`embedding HTTP ${response.status}`);
+      const data = await response.json();
+      if (!Array.isArray(data.vectors) || data.vectors.length !== batch.length) throw new Error('embedding vector count mismatch');
+      output.push(...data.vectors);
+    } catch (error) {
+      console.warn('[company-hub] embedding 调用失败，回退 BM25', String(error.message || error));
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  return output;
+}
+
+function normalizeVector(vector) {
+  const values = Array.isArray(vector) ? vector.map(Number) : [];
+  const norm = Math.sqrt(values.reduce((sum, value) => sum + value * value, 0)) || 1;
+  return values.map((value) => value / norm);
+}
+
+function cosineSimilarity(left, right) {
+  let score = 0;
+  const length = Math.min(left.length, right.length);
+  for (let index = 0; index < length; index += 1) score += left[index] * right[index];
+  return score;
+}
+
+async function indexKnowledgeDoc(doc) {
+  db.data.knowledgeVectors = (db.data.knowledgeVectors ?? []).filter((entry) => entry.docId !== doc.id);
+  if (!EMBEDDING_URL) return 0;
+  const chunks = knowledgeChunks(knowledgeTextFor(doc));
+  if (!chunks.length) return 0;
+  const vectors = await embedKnowledgeTexts(chunks);
+  if (!vectors) return 0;
+  vectors.forEach((vector, index) => {
+    db.data.knowledgeVectors.push({
+      docId: doc.id,
+      chunkIndex: index,
+      model: EMBEDDING_MODEL,
+      dim: vector.length,
+      vector: normalizeVector(vector),
+    });
+  });
+  return vectors.length;
+}
+
+async function searchKnowledgeVector(companyId, groupId, query, limit = 20) {
+  if (!EMBEDDING_URL) return [];
+  const docs = knowledgeDocs(companyId, groupId);
+  if (!docs.length) return [];
+  const vectors = (db.data.knowledgeVectors ?? []).filter((entry) => docs.some((doc) => doc.id === entry.docId));
+  if (!vectors.length) return [];
+  const embedded = await embedKnowledgeTexts([query]);
+  if (!embedded?.length) return [];
+  const queryVector = normalizeVector(embedded[0]);
+  const docMap = new Map(docs.map((doc) => [doc.id, doc]));
+  return vectors
+    .map((entry) => ({
+      doc: docMap.get(entry.docId),
+      chunkIndex: entry.chunkIndex,
+      score: cosineSimilarity(queryVector, entry.vector),
+    }))
+    .filter((entry) => entry.doc)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, Math.max(1, Math.min(50, limit)))
+    .map((entry) => ({
+      docId: entry.doc.id,
+      docName: entry.doc.name,
+      chunkIndex: entry.chunkIndex,
+      text: knowledgeChunks(knowledgeTextFor(entry.doc))[entry.chunkIndex] || '',
+      version: entry.doc.version || '',
+      effectiveAt: entry.doc.effectiveAt || null,
+      authority: entry.doc.authority || 'normal',
+      score: Number(entry.score.toFixed(3)),
+    }));
+}
+
+async function searchKnowledge(companyId, groupId, query, limit = 5) {
+  const bm25 = searchKnowledgeBm25(companyId, groupId, query, 20);
+  const aliases = knowledgeQueryAliases(companyId, query);
+  const vectorQuery = [query, ...aliases].join(' ');
+  const vector = await searchKnowledgeVector(companyId, groupId, vectorQuery, 20);
+  if (!vector.length) return bm25.slice(0, limit);
+  const fused = new Map();
+  const add = (hit, rank) => {
+    const key = `${hit.docId}:${hit.chunkIndex}`;
+    const existing = fused.get(key) ?? { ...hit, score: 0 };
+    existing.score += 1 / (60 + rank);
+    if (hit.text) existing.text = hit.text;
+    fused.set(key, existing);
+  };
+  bm25.forEach((hit, index) => add(hit, index + 1));
+  vector.forEach((hit, index) => add(hit, index + 1));
+  return [...fused.values()]
+    .sort((left, right) => right.score - left.score)
+    .slice(0, limit)
+    .map((hit) => ({ ...hit, score: Number(hit.score.toFixed(4)) }));
+}
+
+function searchKnowledgeBm25(companyId, groupId, query, limit = 5) {
   const aliases = knowledgeQueryAliases(companyId, query);
   const expandedQuery = [query, ...aliases].join(' ');
   const queryTokens = [...new Set(knowledgeTokens(expandedQuery))];
@@ -833,8 +950,8 @@ function searchKnowledge(companyId, groupId, query, limit = 5) {
     }));
 }
 
-function knowledgePrompt(company, group, query) {
-  const hits = searchKnowledge(company.id, group.id, query, 5);
+async function knowledgePrompt(company, group, query) {
+  const hits = await searchKnowledge(company.id, group.id, query, 5);
   if (!hits.length) return '';
   const body = hits
     .map((hit, index) => {
@@ -974,7 +1091,7 @@ async function replyInChat(company, group, trigger, config) {
         '这是普通群聊，不是代码任务。请结合整个群聊历史，直接、简洁地用中文回答成员的问题。',
         '回答时优先使用系统提供的知识库检索资料，并标注来源文件名；资料不足时明确说明。',
         '不要编造没有发生的事。',
-        knowledgePrompt(company, group, trigger.text),
+        await knowledgePrompt(company, group, trigger.text),
       ].filter(Boolean).join('\n'),
     },
   ];
@@ -1308,7 +1425,7 @@ class AcpHost {
       `（群聊：公司「${this.company.name}」/ 群「${this.group.name}」；成员：${members || '成员'}；发送者：${db.employee(trigger.authorId)?.name ?? '成员'}）`,
       '你是这个群的 AI 助理，运行在服务器 DSH 主机，拥有完整工具。直接回答；需要改文件/命令就执行，敏感操作会请求群审批。',
       '',
-      knowledgePrompt(this.company, this.group, text),
+      await knowledgePrompt(this.company, this.group, text),
       '',
       text,
     ].filter(Boolean).join('\n');
@@ -2272,6 +2389,7 @@ route('POST', /^\/api\/knowledge$/, async (req) => {
   }
   await db.save();
   await enrichKnowledgeGraphWithLlm(auth.company, doc, knowledgeTextFor(doc));
+  await indexKnowledgeDoc(doc);
   await db.save();
   return { doc: knowledgeDocView(doc) };
 });
@@ -2282,6 +2400,7 @@ route('DELETE', /^\/api\/knowledge\/([a-z0-9_]+)$/, async (req) => {
   const doc = db.data.knowledgeDocs.find((entry) => entry.id === match[1] && entry.companyId === auth.company.id);
   if (!doc) throw notFound('知识文档不存在');
   db.data.knowledgeDocs = db.data.knowledgeDocs.filter((entry) => entry.id !== doc.id);
+  db.data.knowledgeVectors = (db.data.knowledgeVectors ?? []).filter((entry) => entry.docId !== doc.id);
   db.data.knowledgeRelations = (db.data.knowledgeRelations ?? []).filter((relation) => relation.docId !== doc.id);
   const activeRelations = new Set(
     (db.data.knowledgeRelations ?? []).flatMap((relation) => [relation.subjectId, relation.objectId]),
@@ -2353,6 +2472,7 @@ route('POST', /^\/api\/knowledge\/reindex$/, async (req) => {
     const text = knowledgeTextFor(doc);
     knowledgeExtractGraph(auth.company.id, doc, text);
     await enrichKnowledgeGraphWithLlm(auth.company, doc, text);
+    await indexKnowledgeDoc(doc);
   }
   await db.save();
   return { indexed: docs.length, entities: (db.data.knowledgeEntities ?? []).filter((entity) => entity.companyId === auth.company.id).length };
@@ -2367,7 +2487,7 @@ route('POST', /^\/api\/knowledge\/search$/, async (req) => {
     const group = db.group(groupId);
     if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
   }
-  return { items: searchKnowledge(auth.company.id, groupId, query, Number(body.limit) || 5) };
+  return { items: await searchKnowledge(auth.company.id, groupId, query, Number(body.limit) || 5) };
 });
 
 route('POST', /^\/api\/groups$/, async (req) => {

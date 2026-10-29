@@ -165,7 +165,7 @@ class CompanyHub {
     return this.snapshot();
   }
 
-  async fetchJson(method, apiPath, body, auth = true) {
+  async fetchJson(method, apiPath, body, auth = true, timeoutMs = 10_000) {
     const base = this.state.serverUrl;
     if (!base) throw new HubError('尚未配置服务器');
     const headers = { accept: 'application/json' };
@@ -180,7 +180,7 @@ class CompanyHub {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(10_000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       this.connection = { status: 'error', message: `服务器无响应：${textOf(error)}`, checkedAt: now() };
@@ -602,8 +602,12 @@ class CompanyHub {
       version: meta.version || '',
       effectiveAt: meta.effectiveAt || null,
       authority: meta.authority || 'normal',
-    });
+    }, true, 120_000);
     return result.doc;
+  }
+
+  async reindexKnowledge() {
+    return this.fetchJson('POST', '/api/knowledge/reindex', {}, true, 300_000);
   }
 
   async knowledgeEntities() {
@@ -810,6 +814,8 @@ function handleApi(req, res) {
         return { ok: true, items: await hub.knowledgeEntities() };
       case 'POST knowledge/alias':
         return hub.addKnowledgeAlias(body.alias, body.canonical).then((entity) => ({ ok: true, entity }));
+      case 'POST knowledge/reindex':
+        return hub.reindexKnowledge();
       case 'POST knowledge/delete':
         return hub.deleteKnowledge(body.docId);
       case 'POST knowledge/search':

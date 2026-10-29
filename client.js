@@ -221,6 +221,8 @@ window.__ModuleLoader__.load({
       'knowledge.superseded': '已被新版本替代',
       'knowledge.empty': '还没有知识文档',
       'knowledge.upload': '上传文档',
+      'knowledge.reindex': '重建索引',
+      'knowledge.reindexed': '知识库索引已重建',
       'knowledge.tooLarge': '文件超过 10MB',
       'knowledge.deleteConfirm': '删除知识文档「{name}」？',
       'knowledge.version': '版本（可选）',
@@ -470,6 +472,8 @@ window.__ModuleLoader__.load({
       'knowledge.superseded': 'superseded',
       'knowledge.empty': 'No knowledge documents yet',
       'knowledge.upload': 'Upload',
+      'knowledge.reindex': 'Reindex',
+      'knowledge.reindexed': 'Knowledge index rebuilt',
       'knowledge.tooLarge': 'File exceeds 10MB',
       'knowledge.deleteConfirm': 'Delete knowledge document "{name}"?',
       'knowledge.version': 'Version (optional)',
@@ -1306,6 +1310,7 @@ window.__ModuleLoader__.load({
           return json.items ?? [];
         },
         addKnowledgeAlias: (alias, canonical) => request('POST', '/knowledge/alias', { alias, canonical }),
+        reindexKnowledge: () => request('POST', '/knowledge/reindex', {}),
         searchKnowledge: async (query, groupId) => {
           const json = await request('POST', '/knowledge/search', { query, groupId });
           return json.items ?? [];
@@ -2814,8 +2819,21 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const linkAlias = async () => {
-        if (!alias.trim() || !canonical.trim()) return;
+      const reindex = async () => {
+        setBusy(true);
+        setError('');
+        try {
+          await store.reindexKnowledge();
+          await load();
+          store.notify('ok', t('knowledge.reindexed'));
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      const linkAlias = async () => {        if (!alias.trim() || !canonical.trim()) return;
         setBusy(true);
         setError('');
         try {
@@ -2866,6 +2884,12 @@ window.__ModuleLoader__.load({
             },
             h(Icon, { name: 'plus', size: 13 }),
             busy ? t('loading') : t('knowledge.upload'),
+          ),
+          h(
+            'button',
+            { type: 'button', className: 'dcc-btn', disabled: busy, onClick: reindex },
+            h(Icon, { name: 'sync', size: 13 }),
+            t('knowledge.reindex'),
           ),
         ),
         h(
