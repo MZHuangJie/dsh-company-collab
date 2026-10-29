@@ -1,0 +1,8 @@
+{
+  "name": "company-host-approval",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "index.js",
+  "description": "Bridge DSH approval requests to the Company Hub group chat.",
+  "license": "MIT"
+}

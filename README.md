@@ -5,10 +5,10 @@ DSH 的「公司项目专用工作模式」：公司、员工账号、通讯录�
 - **左侧栏**：企业协作主面板（联系人、群组、群聊、AI 任务、仓库绑定）。
 - **右侧栏**：协作标签页，查看群消息、AI 任务和仓库状态。
 - **AI 是群成员**：建群时自动加入。
-  - 直接 `@AI` 是**群聊对话**，由服务端 AI 结合共享群历史回答；
+  - 直接 `@AI` 是**群聊对话**：配置服务器 DSH 主机后，由服务器上的完整 DSH 执行（文件、shell、Git、测试、MCP）；未配置时退回服务端聊天 API；
   - 勾选「作为 AI 任务发送」才是**本机任务**，由提出者电脑上的 DSH AI 修改本地 Git 仓库、运行测试并 push。
 - **谁提出，谁的本机执行**：任务派给提出者本人，其他成员 `git pull` 获取结果。
-- **服务端两种角色**：聊天 AI + 账号/群聊/任务队列/每群 Git 裸仓库；聊天 Key 由服务端环境变量提供，代码任务不需要服务端 AI。
+- **服务端两种角色**：DSH 主机 / 聊天 AI + 账号/群聊/任务队列/每群 Git 裸仓库。
 
 ## 安装
 
@@ -55,6 +55,45 @@ location /git/ {
 }
 ```
 
+## 服务器 DSH 主机（完整 DSH 能力）
+
+默认 `@AI` 走服务端聊天 API。要让群聊拥有完整 DSH 工具能力，在服务器安装 DSH CLI 并配置 host profile：
+
+```bash
+npm install @deepseek-ai/dsh@0.2.1-rc.4
+# 以运行 Hub 的用户初始化 headless profile
+DSH_HOME=/var/lib/dsh-host/home dsh --profile headless "只回复：OK"
+```
+
+把 `server/host-approval` 安装到 host profile 的 `node_modules/company-host-approval`，并在 profile 的 `cordis.patch.yml` 加：
+
+```yaml
+- insert:
+    - id: company-host-approval
+      name: company-host-approval
+```
+
+Hub 环境变量：
+
+```bash
+DSH_HOST_ENABLED=1
+COMPANY_HOST_TOKEN=<随机长 token>
+COMPANY_HOST_URL=http://127.0.0.1:8477
+DSH_HOST_BIN=/opt/dsh-host/node_modules/@deepseek-ai/dsh/lib/bin.js
+DSH_HOST_HOME=/var/lib/dsh-host/home
+DSH_HOST_WORKSPACE_ROOT=/var/lib/dsh-host/workspaces
+DSH_HOST_PERMISSION_MODE=workspace-write
+```
+
+群里的危险操作会发审批消息，管理员或提出者回复：
+
+```text
+允许 <审批编号>
+拒绝 <审批编号>
+```
+
+120 秒未处理自动拒绝。
+
 ## 第一次使用
 
 1. 打开左侧栏「企业协作」，填服务器地址（本机默认 `http://127.0.0.1:8477`）并连接。
@@ -66,7 +105,8 @@ location /git/ {
    - 已绑定后点「仓库」执行 `git pull --ff-only`。
 5. 在群里和 AI 协作：
    - 输入 `@` 会弹出群成员列表，输入名字可过滤，↑/↓ 选择、Enter/Tab 确认；
-   - 直接 `@AI 助理 ...` 是**群聊对话**：服务端 AI 结合群历史回答，不创建任务、不改仓库；
+   - 直接 `@AI 助理 ...` 是**群聊对话**：由服务器 DSH 主机执行（完整工具）或退回服务端聊天 API，不创建任务；
+   - 危险操作会发审批消息，管理员/提出者回复「允许 <编号>」或「拒绝 <编号>」；
    - 勾选「作为 AI 任务发送」才是**本机任务**：服务端创建任务并派给提出者；
    - 提出者打开着「企业协作」面板、且有可用 DSH 会话时，本机 AI 会认领并在本地仓库执行；
    - AI 应建 `ai/<task>` 分支、改文件、测试、commit/push、合并 main、push、删除分支，然后回群汇报并标记任务完成；
@@ -77,6 +117,8 @@ location /git/ {
 
 - 本机状态：`$DSH_HOME/storages/company-collab/state.json`（服务器地址、登录令牌、Git Token、群组本地目录映射）。
 - 服务端数据：`<--data>/db.json`、`<--data>/git/<companyId>/<groupId>.git`。
+- DSH 主机数据：`DSH_HOST_HOME`（profile/会话）与 `DSH_HOST_WORKSPACE_ROOT`（每群服务器 checkout）。
+- 审批记录存在 `db.json`，批准/拒绝/超时都会在群里留系统消息。
 - 每位员工有独立 Git Token，服务端只保存 hash；clone/pull/push 通过 HTTPS Basic Auth。
 - 本机仓库使用本地 `url.<...>.insteadOf` 写入认证信息，因此 **Token 会明文存在本地 `.git/config`**；请勿把该仓库目录公开或打包分享。
 - 删除群组：删除群聊历史、任务、服务端 Git 仓库和本机映射；**不会自动删除你选择的本地仓库目录**。

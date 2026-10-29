@@ -132,6 +132,7 @@ function emptyDb() {
     tasks: [],
     reads: [],
     aiJobs: [],
+    approvals: [],
   };
 }
 
@@ -276,6 +277,111 @@ function chatAiConfig() {
   };
 }
 
+function dshHostEnabled() {
+  return process.env.DSH_HOST_ENABLED === '1';
+}
+
+function dshHostWorkspace(company, group) {
+  const root = path.resolve(process.env.DSH_HOST_WORKSPACE_ROOT || '/var/lib/dsh-host/workspaces');
+  const target = path.join(root, company.id, group.id);
+  fs.mkdirSync(target, { recursive: true });
+  if (!fs.existsSync(path.join(target, '.git')) && group.repoPath) {
+    const repo = groupRepoPath(group.repoPath);
+    if (fs.existsSync(repo)) {
+      const result = spawnSync('git', ['clone', repo, target], { encoding: 'utf8' });
+      if (result.status !== 0) console.warn('[company-hub] DSH host clone 失败', result.stderr?.slice(0, 500));
+    }
+  }
+  return target;
+}
+
+function dshHostPrompt(company, group) {
+  const history = db.data.messages
+    .filter((entry) => entry.groupId === group.id && (entry.kind === 'text' || entry.kind === 'task'))
+    .slice(-30)
+    .map((entry) => {
+      const author = db.employee(entry.authorId);
+      return `${author?.isAi ? 'AI 助理' : author?.name ?? '成员'}：${entry.text}`;
+    })
+    .join('\n');
+  const members = db
+    .companyEmployees(company.id)
+    .filter((entry) => !entry.isAi)
+    .map((entry) => entry.name)
+    .join('、');
+  return [
+    `你是「${company.name}」企业群「${group.name}」的 AI 助理，群成员：${members || '成员'}。`,
+    '你运行在公司服务器的 DSH 主机上，拥有完整 DSH 工具（文件、shell、Git、测试等）。',
+    '这是群聊，不是代码任务：直接回答成员的问题；需要时可以使用工具检查当前 Git 仓库。',
+    '如果执行敏感操作需要审批，DSH 会向群聊发起审批；请等待审批结果。',
+    '最终只输出要发到群里的回复正文，不要输出工具日志、思考过程或 Markdown 代码围栏以外的系统信息。',
+    '',
+    '最近群聊：',
+    history || '（暂无）',
+  ].join('\n');
+}
+
+async function replyWithDshHost(company, group, trigger) {
+  const workspace = dshHostWorkspace(company, group);
+  const prompt = dshHostPrompt(company, group);
+  const cli = process.env.DSH_HOST_BIN || '/opt/dsh-host/node_modules/@deepseek-ai/dsh/lib/bin.js';
+  const home = process.env.DSH_HOST_HOME || '/var/lib/dsh-host/home';
+  if (!fs.existsSync(cli)) throw new Error(`DSH host CLI 不存在：${cli}`);
+  const env = {
+    ...process.env,
+    DSH_HOME: home,
+    DSH_PERMISSION_MODE: process.env.DSH_HOST_PERMISSION_MODE || 'workspace-write',
+    COMPANY_HOST_TOKEN: String(process.env.COMPANY_HOST_TOKEN || ''),
+    COMPANY_HOST_URL: String(process.env.COMPANY_HOST_URL || 'http://127.0.0.1:8477'),
+    COMPANY_ID: company.id,
+    GROUP_ID: group.id,
+    REQUESTED_BY: trigger.authorId,
+  };
+  const output = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [cli, '--profile', 'headless', prompt], {
+      cwd: workspace,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('DSH host 执行超时'));
+    }, Number(process.env.DSH_HOST_TIMEOUT_MS || 150_000));
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.length > 200_000) stdout = stdout.slice(-200_000);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+      if (stderr.length > 20_000) stderr = stderr.slice(-20_000);
+    });
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(stdout.trim());
+      else reject(new Error(`DSH host 退出码 ${code}：${stderr.slice(-500)}`));
+    });
+  });
+  if (!output || !db.group(group.id)) return;
+  db.data.messages.push({
+    id: randomId('msg'),
+    companyId: company.id,
+    groupId: group.id,
+    seq: ++group.seq,
+    text: output,
+    authorId: db.aiMember(company.id)?.id ?? trigger.authorId,
+    kind: 'text',
+    createdAt: now(),
+  });
+  await db.save();
+}
+
+
 function scheduleChatReply(company, group, trigger) {
   const config = chatAiConfig();
   if (!config.apiKey) {
@@ -284,8 +390,11 @@ function scheduleChatReply(company, group, trigger) {
   }
   const previous = CHAT_QUEUES.get(group.id) ?? Promise.resolve();
   const next = previous
-    .then(() => replyInChat(company, group, trigger, config))
-    .catch((error) => console.error('[company-hub] 群聊 AI 回复失败', error))
+    .then(() => (dshHostEnabled() ? replyWithDshHost(company, group, trigger) : replyInChat(company, group, trigger, config)))
+    .catch((error) => {
+      console.error('[company-hub] 群聊 AI 回复失败', error);
+      postSystemMessage(company, group, `AI 回复失败：${String(error.message || error).slice(0, 200)}`);
+    })
     .finally(() => {
       if (CHAT_QUEUES.get(group.id) === next) CHAT_QUEUES.delete(group.id);
     });
@@ -364,6 +473,90 @@ async function replyInChat(company, group, trigger, config) {
     createdAt: now(),
   });
   await db.save();
+}
+
+function hostTokenOk(req) {
+  const expected = String(process.env.COMPANY_HOST_TOKEN || '');
+  if (!expected) return false;
+  return req.headers['x-company-host-token'] === expected;
+}
+
+function approvalShort(id) {
+  return String(id).slice(-6);
+}
+
+function expireApproval(approval) {
+  if (approval.status === 'pending' && now() > approval.expiresAt) {
+    approval.status = 'expired';
+    approval.decidedAt = now();
+    return true;
+  }
+  return false;
+}
+
+function approvalSystemMessage(company, group, approval, text) {
+  if (!db.group(group.id)) return;
+  db.data.messages.push({
+    id: randomId('msg'),
+    companyId: company.id,
+    groupId: group.id,
+    seq: ++group.seq,
+    text,
+    authorId: db.aiMember(company.id)?.id ?? approval.requestedBy,
+    kind: 'system',
+    approvalId: approval.id,
+    createdAt: now(),
+  });
+}
+
+function announceApproval(company, group, approval) {
+  const reason = approval.reason ? `：${approval.reason}` : '';
+  approvalSystemMessage(
+    company,
+    group,
+    approval,
+    `⚠️ AI 主机请求执行「${approval.toolName}」${reason}\n审批编号 ${approvalShort(approval.id)}；管理员或提出者回复「允许 ${approvalShort(approval.id)}」或「拒绝 ${approvalShort(approval.id)}」，120 秒后自动拒绝。`,
+  );
+}
+
+function decideApproval(approval, employee, decision) {
+  if (!approval || approval.status !== 'pending') return null;
+  if (expireApproval(approval)) return approval;
+  const group = db.group(approval.groupId);
+  if (!group) return null;
+  const allowed = employee.role === 'admin' || employee.id === approval.requestedBy;
+  if (!allowed) throw forbidden('只有管理员或任务提出者可以审批');
+  approval.status = decision === 'allow' ? 'approved' : 'rejected';
+  approval.decidedBy = employee.id;
+  approval.decidedAt = now();
+  announceDecision(group, approval, employee);
+  return approval;
+}
+
+function announceDecision(group, approval, employee) {
+  const company = db.company(approval.companyId);
+  if (!company) return;
+  approvalSystemMessage(
+    company,
+    group,
+    approval,
+    `审批 ${approvalShort(approval.id)} ${approval.status === 'approved' ? '已允许' : '已拒绝'}（${employee.name}）。`,
+  );
+}
+
+function expirePendingApprovals() {
+  let changed = false;
+  for (const approval of db.data.approvals) {
+    if (approval.status !== 'pending') continue;
+    if (!expireApproval(approval)) continue;
+    const group = db.group(approval.groupId);
+    const company = db.company(approval.companyId);
+    if (group && company) {
+      approvalSystemMessage(company, group, approval, `审批 ${approvalShort(approval.id)} 超时，已自动拒绝。`);
+    }
+    changed = true;
+  }
+  if (changed) db.save().catch((error) => console.error('[company-hub] 审批超时保存失败', error));
 }
 
 function expireOfflineJobs() {
@@ -872,6 +1065,48 @@ route('POST', /^\/api\/me\/heartbeat$/, async (req) => {
   return { online: true, at: auth.employee.lastSeenAt };
 });
 
+route('POST', /^\/api\/host\/approvals$/, async (req) => {
+  if (!hostTokenOk(req)) throw forbidden('Host token 无效');
+  const body = await readJsonBody(req);
+  const company = db.company(str(body.companyId, 'companyId', { max: 80 }));
+  if (!company) throw notFound('公司不存在');
+  const group = db.group(str(body.groupId, 'groupId', { max: 80 }));
+  if (!group || group.companyId !== company.id) throw notFound('群组不存在');
+  const requester = db.employee(str(body.requestedBy, 'requestedBy', { max: 80 }));
+  if (!requester || !group.memberIds.includes(requester.id)) throw bad('提出者不是群成员');
+  const toolName = str(body.toolName || '工具调用', 'toolName', { max: 120 });
+  const reason = typeof body.reason === 'string' ? body.reason.slice(0, 500) : '';
+  const approval = {
+    id: randomId('apr'),
+    companyId: company.id,
+    groupId: group.id,
+    requestedBy: requester.id,
+    toolName,
+    reason,
+    callId: typeof body.callId === 'string' ? body.callId.slice(0, 120) : '',
+    status: 'pending',
+    createdAt: now(),
+    expiresAt: now() + 120_000,
+  };
+  db.data.approvals.push(approval);
+  announceApproval(company, group, approval);
+  await db.save();
+  return {
+    id: approval.id,
+    status: approval.status,
+    expiresAt: approval.expiresAt,
+  };
+});
+
+route('GET', /^\/api\/host\/approvals\/([a-z0-9_]+)$/, async (req) => {
+  if (!hostTokenOk(req)) throw forbidden('Host token 无效');
+  const id = /^\/api\/host\/approvals\/([a-z0-9_]+)$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname)[1];
+  const approval = db.data.approvals.find((entry) => entry.id === id);
+  if (!approval) throw notFound('审批不存在');
+  if (expireApproval(approval)) await db.save();
+  return { id: approval.id, status: approval.status, expiresAt: approval.expiresAt };
+});
+
 route('GET', /^\/api\/ai\/jobs$/, async (req) => {
   const auth = authenticate(req);
   expireOfflineJobs();
@@ -1121,6 +1356,7 @@ route('DELETE', /^\/api\/groups\/([a-z0-9_]+)$/, async (req) => {
   db.data.messages = db.data.messages.filter((entry) => entry.groupId !== groupId);
   db.data.tasks = db.data.tasks.filter((entry) => entry.groupId !== groupId);
   db.data.reads = db.data.reads.filter((entry) => entry.groupId !== groupId);
+  db.data.approvals = db.data.approvals.filter((entry) => entry.groupId !== groupId);
   await db.save();
   return { removed: true };
 });
@@ -1158,6 +1394,21 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
   const author = asAi && ai ? ai : auth.employee;
   const wantsTask = body.task === true && author.isAi === false;
   const mentioned = author.isAi === false && /@\s*ai\b|@\s*AI\b|@\s*Ai\b|AI\s*助理/i.test(text);
+  const approvalMatch = author.isAi === false ? /^\s*(允许|批准|拒绝|approve|reject)\s+([a-z0-9]{6})\s*$/i.exec(text) : null;
+  if (approvalMatch) {
+    const approval = db.data.approvals
+      .filter((entry) => entry.groupId === group.id && entry.id.endsWith(approvalMatch[2]))
+      .at(-1);
+    if (!approval) throw notFound('找不到这个审批');
+    if (expireApproval(approval)) {
+      await db.save();
+      return { approval: { id: approval.id, status: approval.status } };
+    }
+    const decision = /^(允许|批准|approve)$/i.test(approvalMatch[1]) ? 'allow' : 'deny';
+    decideApproval(approval, auth.employee, decision);
+    await db.save();
+    return { approval: { id: approval.id, status: approval.status } };
+  }
   const message = {
     id: randomId('msg'),
     companyId: auth.company.id,
@@ -1322,6 +1573,7 @@ const server = http.createServer(async (req, res) => {
       const publicOnboarding =
         pathname === '/api/companies' ||
         pathname === '/api/auth/login' ||
+        pathname.startsWith('/api/host/') ||
         /^\/api\/companies\/[a-z0-9_]+\/join$/.test(pathname);
       if (pathname.startsWith('/api/') && !publicOnboarding) {
         auth = authenticate(req);
@@ -1338,6 +1590,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 setInterval(expireOfflineJobs, 30_000).unref();
+setInterval(expirePendingApprovals, 10_000).unref();
 
 server.listen(args.port, args.host, () => {
   const displayHost = args.host === '0.0.0.0' ? '127.0.0.1' : args.host;

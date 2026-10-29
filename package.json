@@ -1,8 +1,8 @@
 {
   "name": "@local/dsh-company-collab",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "type": "module",
-  "description": "DSH company collaboration mode: companies, employee accounts, contacts, groups with an auto-joined AI member, per-group Git repositories, and local AI task execution.",
+  "description": "DSH company collaboration mode: companies, employee accounts, groups with an auto-joined AI member, server-side DSH host with group approvals, and local Git AI tasks.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -32,6 +32,8 @@
     "locale/*.json",
     "icon.svg",
     "server/company-hub-server.mjs",
+    "server/host-approval/index.js",
+    "server/host-approval/package.json",
     "README.md",
     "LICENSE"
   ],
