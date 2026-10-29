@@ -643,12 +643,13 @@ function expirePendingApprovals() {
   if (changed) db.save().catch((error) => console.error('[company-hub] 审批超时保存失败', error));
 }
 
-function createApprovalRecord(company, group, requester, toolName, reason, callId) {
+function createApprovalRecord(company, group, requesterRef, toolName, reason, callId) {
+  const requester = typeof requesterRef === 'string' ? db.employee(requesterRef) : requesterRef;
   const approval = {
     id: randomId('apr'),
     companyId: company.id,
     groupId: group.id,
-    requestedBy: requester.id,
+    requestedBy: requester?.id ?? '',
     toolName: String(toolName || '工具调用').slice(0, 120),
     reason: String(reason || '').slice(0, 500),
     callId: String(callId || '').slice(0, 120),
@@ -834,7 +835,7 @@ class AcpHost {
 
   async run(text, trigger) {
     const connection = await this.ensure();
-    this.runState = { runId: randomId('run'), thought: '', answer: '', triggeredBy: trigger, tools: new Map() };
+    this.runState = { runId: randomId('run'), thought: '', answer: '', triggeredBy: trigger.authorId, tools: new Map() };
     broadcastGroupEvent(this.group.id, 'run', { runId: this.runState.runId, kind: 'start' });
     const members = db
       .companyEmployees(this.company.id)
