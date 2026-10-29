@@ -35,6 +35,7 @@ import http from 'node:http';
 import path from 'node:path';
 import readline from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
+import { DatabaseSync } from 'node:sqlite';
 
 const VERSION = '1.0.0';
 const MAX_BODY_BYTES = 24 * 1024 * 1024;
@@ -65,6 +66,7 @@ const DB_PATH = path.join(DATA_DIR, 'db.json');
 const GIT_ROOT = path.resolve(process.env.COMPANY_GIT_ROOT || path.join(DATA_DIR, 'git'));
 const KNOWLEDGE_ROOT = path.resolve(process.env.COMPANY_KNOWLEDGE_ROOT || path.join(DATA_DIR, 'knowledge'));
 const KNOWLEDGE_MAX_BYTES = 10 * 1024 * 1024;
+const VECTOR_DB_PATH = path.join(DATA_DIR, 'knowledge-vectors.sqlite');
 const EMBEDDING_URL = String(process.env.EMBEDDING_URL || '').trim();
 const EMBEDDING_MODEL = String(process.env.EMBEDDING_MODEL || 'BAAI/bge-small-zh-v1.5');
 const EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM || 512) || 512;
@@ -237,6 +239,65 @@ class Database {
 }
 
 const db = new Database(DB_PATH);
+
+let vectorDb = null;
+
+function vectorBlob(vector) {
+  return Buffer.from(new Float32Array(vector).buffer);
+}
+
+function blobVector(blob) {
+  const source = Buffer.from(blob);
+  const copy = Buffer.alloc(source.length);
+  source.copy(copy);
+  return new Float32Array(copy.buffer, copy.byteOffset, copy.length / 4);
+}
+
+function initVectorDb() {
+  fs.mkdirSync(path.dirname(VECTOR_DB_PATH), { recursive: true });
+  vectorDb = new DatabaseSync(VECTOR_DB_PATH);
+  vectorDb.exec(`
+    CREATE TABLE IF NOT EXISTS knowledge_chunks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      company_id TEXT NOT NULL,
+      group_id TEXT,
+      doc_id TEXT NOT NULL,
+      chunk_index INTEGER NOT NULL,
+      model TEXT NOT NULL,
+      dim INTEGER NOT NULL,
+      vector BLOB NOT NULL,
+      UNIQUE(doc_id, chunk_index)
+    );
+    CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_scope ON knowledge_chunks(company_id, group_id, model);
+  `);
+  const legacy = Array.isArray(db.data.knowledgeVectors) ? db.data.knowledgeVectors : [];
+  if (legacy.length) {
+    const insert = vectorDb.prepare(
+      'INSERT OR REPLACE INTO knowledge_chunks (company_id, group_id, doc_id, chunk_index, model, dim, vector) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    for (const entry of legacy) {
+      const doc = (db.data.knowledgeDocs ?? []).find((item) => item.id === entry.docId);
+      if (!doc) continue;
+      vectorDb.exec('BEGIN');
+      try {
+        insert.run(doc.companyId, doc.groupId, doc.id, entry.chunkIndex, entry.model || EMBEDDING_MODEL, entry.vector.length, vectorBlob(entry.vector));
+        vectorDb.exec('COMMIT');
+      } catch {
+        vectorDb.exec('ROLLBACK');
+      }
+    }
+    db.data.knowledgeVectors = [];
+    db.save().catch((error) => console.warn('[company-hub] 清理旧向量字段失败', String(error.message || error)));
+    console.log(`[company-hub] 已迁移 ${legacy.length} 条旧向量到 SQLite`);
+  }
+}
+
+try {
+  initVectorDb();
+} catch (error) {
+  console.warn('[company-hub] SQLite 向量库初始化失败，将回退 BM25', String(error.message || error));
+  vectorDb = null;
+}
 
 // ---------------------------------------------------------------- domain helpers
 
@@ -834,39 +895,49 @@ function cosineSimilarity(left, right) {
 }
 
 async function indexKnowledgeDoc(doc) {
-  db.data.knowledgeVectors = (db.data.knowledgeVectors ?? []).filter((entry) => entry.docId !== doc.id);
+  if (!vectorDb) return 0;
+  vectorDb.prepare('DELETE FROM knowledge_chunks WHERE doc_id = ?').run(doc.id);
   if (!EMBEDDING_URL) return 0;
   const chunks = knowledgeChunks(knowledgeTextFor(doc));
   if (!chunks.length) return 0;
   const vectors = await embedKnowledgeTexts(chunks);
   if (!vectors) return 0;
-  vectors.forEach((vector, index) => {
-    db.data.knowledgeVectors.push({
-      docId: doc.id,
-      chunkIndex: index,
-      model: EMBEDDING_MODEL,
-      dim: vector.length,
-      vector: normalizeVector(vector),
+  const insert = vectorDb.prepare(
+    'INSERT OR REPLACE INTO knowledge_chunks (company_id, group_id, doc_id, chunk_index, model, dim, vector) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  );
+  vectorDb.exec('BEGIN');
+  try {
+    vectors.forEach((vector, index) => {
+      const normalized = normalizeVector(vector);
+      insert.run(doc.companyId, doc.groupId, doc.id, index, EMBEDDING_MODEL, normalized.length, vectorBlob(normalized));
     });
-  });
+    vectorDb.exec('COMMIT');
+  } catch (error) {
+    vectorDb.exec('ROLLBACK');
+    throw error;
+  }
   return vectors.length;
 }
 
 async function searchKnowledgeVector(companyId, groupId, query, limit = 20) {
-  if (!EMBEDDING_URL) return [];
+  if (!EMBEDDING_URL || !vectorDb) return [];
   const docs = knowledgeDocs(companyId, groupId);
   if (!docs.length) return [];
-  const vectors = (db.data.knowledgeVectors ?? []).filter((entry) => docs.some((doc) => doc.id === entry.docId));
-  if (!vectors.length) return [];
+  const rows = vectorDb
+    .prepare(
+      'SELECT doc_id, chunk_index, vector FROM knowledge_chunks WHERE company_id = ? AND (group_id IS NULL OR group_id = ?) AND model = ?',
+    )
+    .all(companyId, groupId, EMBEDDING_MODEL);
+  if (!rows.length) return [];
   const embedded = await embedKnowledgeTexts([query]);
   if (!embedded?.length) return [];
   const queryVector = normalizeVector(embedded[0]);
   const docMap = new Map(docs.map((doc) => [doc.id, doc]));
-  return vectors
+  return rows
     .map((entry) => ({
-      doc: docMap.get(entry.docId),
-      chunkIndex: entry.chunkIndex,
-      score: cosineSimilarity(queryVector, entry.vector),
+      doc: docMap.get(entry.doc_id),
+      chunkIndex: entry.chunk_index,
+      score: cosineSimilarity(queryVector, blobVector(entry.vector)),
     }))
     .filter((entry) => entry.doc)
     .sort((left, right) => right.score - left.score)
@@ -2415,7 +2486,7 @@ route('DELETE', /^\/api\/knowledge\/([a-z0-9_]+)$/, async (req) => {
   const doc = db.data.knowledgeDocs.find((entry) => entry.id === match[1] && entry.companyId === auth.company.id);
   if (!doc) throw notFound('知识文档不存在');
   db.data.knowledgeDocs = db.data.knowledgeDocs.filter((entry) => entry.id !== doc.id);
-  db.data.knowledgeVectors = (db.data.knowledgeVectors ?? []).filter((entry) => entry.docId !== doc.id);
+  if (vectorDb) vectorDb.prepare('DELETE FROM knowledge_chunks WHERE doc_id = ?').run(doc.id);
   db.data.knowledgeRelations = (db.data.knowledgeRelations ?? []).filter((relation) => relation.docId !== doc.id);
   const activeRelations = new Set(
     (db.data.knowledgeRelations ?? []).flatMap((relation) => [relation.subjectId, relation.objectId]),
@@ -2483,14 +2554,16 @@ route('POST', /^\/api\/knowledge\/entities\/alias$/, async (req) => {
 route('POST', /^\/api\/knowledge\/reindex$/, async (req) => {
   const auth = authenticate(req);
   const docs = (db.data.knowledgeDocs ?? []).filter((doc) => doc.companyId === auth.company.id && !doc.supersededBy);
+  if (vectorDb) vectorDb.prepare('DELETE FROM knowledge_chunks WHERE company_id = ?').run(auth.company.id);
+  let vectorCount = 0;
   for (const doc of docs) {
     const text = knowledgeTextFor(doc);
     knowledgeExtractGraph(auth.company.id, doc, text);
     await enrichKnowledgeGraphWithLlm(auth.company, doc, text);
-    await indexKnowledgeDoc(doc);
+    vectorCount += await indexKnowledgeDoc(doc);
   }
   await db.save();
-  return { indexed: docs.length, entities: (db.data.knowledgeEntities ?? []).filter((entity) => entity.companyId === auth.company.id).length };
+  return { indexed: docs.length, vectors: vectorCount, entities: (db.data.knowledgeEntities ?? []).filter((entity) => entity.companyId === auth.company.id).length };
 });
 
 route('POST', /^\/api\/knowledge\/search$/, async (req) => {
