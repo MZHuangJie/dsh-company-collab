@@ -2802,9 +2802,7 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
   const asAi = body.asAi === true;
   const ai = db.aiMember(auth.company.id);
   const author = asAi && ai ? ai : auth.employee;
-  const aiName = String(ai?.name || '').trim();
-  const nameMention = Boolean(aiName && (text.includes(`@${aiName}`) || text.includes(`@ ${aiName}`)));
-  const mentioned = author.isAi === false && (nameMention || /@\s*ai\b|@\s*AI\b|@\s*Ai\b|AI\s*助理/i.test(text));
+  const shouldReply = author.isAi === false;
   const approvalMatch = author.isAi === false ? /^\s*(允许|批准|拒绝|approve|reject)\s+([a-z0-9]{6})\s*$/i.exec(text) : null;
   if (approvalMatch) {
     const approval = db.data.approvals
@@ -2834,7 +2832,7 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
   db.data.messages.push(message);
   await db.save();
   broadcastGroupEvent(group.id, 'message', { message: messageView(message) });
-  if (mentioned) {
+  if (shouldReply) {
     scheduleChatReply(auth.company, group, message);
   }
   return { message: messageView(message) };
