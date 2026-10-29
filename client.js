@@ -499,6 +499,9 @@ window.__ModuleLoader__.load({
 .dcc-approval[data-status="rejected"] .dcc-approvalStatus,.dcc-approval[data-status="expired"] .dcc-approvalStatus{color:var(--dsw-alias-label-tertiary)}
 .dcc-approvalReason{font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-word;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);max-height:130px;overflow:auto}
 .dcc-approvalActions{display:flex;gap:8px}
+.dcc-approvalBanner{flex:none;display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:.5px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary) 35%,var(--dsw-alias-border-l1));background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 9%,var(--dsw-alias-bg-layer-1))}
+.dcc-approvalBannerText{flex:none;font-size:11px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.dcc-approvalBannerReason{min-width:0;flex:1;font-size:10px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcc-runBody{display:flex;flex-direction:column;gap:4px;padding:2px 9px 8px;border-top:.5px solid var(--dsw-alias-border-l1)}
 .dcc-runItem{font-size:11px;line-height:1.55;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}
 .dcc-runItem[data-strong]{color:var(--dsw-alias-label-primary)}
@@ -2444,6 +2447,9 @@ window.__ModuleLoader__.load({
         });
       };
 
+      const pendingApprovals = bucket.items.filter((message) => message.approval?.status === 'pending');
+      const firstApproval = pendingApprovals[0]?.approval;
+
       return h(
         'section',
         { className: 'dcc-chat' },
@@ -2520,6 +2526,24 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
+        firstApproval
+          ? h(
+              'div',
+              { className: 'dcc-approvalBanner' },
+              h('span', { className: 'dcc-approvalBannerText' }, t('approval.title', { tool: firstApproval.toolName || t('run.tool.default') })),
+              firstApproval.reason ? h('span', { className: 'dcc-approvalBannerReason' }, firstApproval.reason) : null,
+              h(
+                'button',
+                { type: 'button', className: 'dcc-btn', 'data-primary': '', onClick: () => decideApproval(firstApproval.shortId, true) },
+                t('approval.allow'),
+              ),
+              h(
+                'button',
+                { type: 'button', className: 'dcc-btn', onClick: () => decideApproval(firstApproval.shortId, false) },
+                t('approval.deny'),
+              ),
+            )
+          : null,
         h(
           'div',
           { className: 'dcc-messages dcc-scrollThin', ref: scroller },

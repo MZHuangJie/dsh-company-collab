@@ -659,6 +659,7 @@ function createApprovalRecord(company, group, requesterRef, toolName, reason, ca
   };
   db.data.approvals.push(approval);
   announceApproval(company, group, approval);
+  db.save().catch((error) => console.error('[company-hub] 审批保存失败', error));
   return approval;
 }
 
