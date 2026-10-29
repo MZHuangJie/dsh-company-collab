@@ -114,6 +114,13 @@ window.__ModuleLoader__.load({
       'run.tool.webSearch': '联网搜索',
       'run.tool.default': '工具调用',
       'run.ai': 'AI 助理',
+      'approval.title': 'AI 请求执行「{tool}」',
+      'approval.allow': '允许',
+      'approval.deny': '拒绝',
+      'approval.pending': '等待审批',
+      'approval.approved': '已允许',
+      'approval.rejected': '已拒绝',
+      'approval.expired': '已超时',
       'task.title': 'AI 任务',
       'task.empty': '暂无待处理的 AI 任务',
       'task.by': '{name} 指派',
@@ -308,6 +315,13 @@ window.__ModuleLoader__.load({
       'run.tool.webSearch': 'Web search',
       'run.tool.default': 'Tool call',
       'run.ai': 'AI assistant',
+      'approval.title': 'AI requests to run "{tool}"',
+      'approval.allow': 'Allow',
+      'approval.deny': 'Deny',
+      'approval.pending': 'Waiting for approval',
+      'approval.approved': 'Approved',
+      'approval.rejected': 'Denied',
+      'approval.expired': 'Expired',
       'task.title': 'AI tasks',
       'task.empty': 'No pending AI tasks',
       'task.by': 'assigned by {name}',
@@ -478,6 +492,13 @@ window.__ModuleLoader__.load({
 .dcc-conv{display:flex;flex-direction:column;gap:14px;min-width:0}
 .dcc-live{display:flex;flex-direction:column;gap:10px}
 .dcc-liveAnswer{display:flex;flex-direction:column;gap:4px;padding-left:0}
+.dcc-approval{display:flex;flex-direction:column;gap:7px;padding:9px 10px;border:.5px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary) 38%,var(--dsw-alias-border-l1));border-radius:10px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 7%,var(--dsw-alias-bg-layer-1))}
+.dcc-approvalHead{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-primary)}
+.dcc-approvalStatus{margin-left:auto;font-size:10px;font-weight:500;color:var(--dsw-alias-state-warn-primary)}
+.dcc-approval[data-status="approved"] .dcc-approvalStatus{color:var(--dsw-alias-state-success-primary,var(--dsw-alias-brand-primary))}
+.dcc-approval[data-status="rejected"] .dcc-approvalStatus,.dcc-approval[data-status="expired"] .dcc-approvalStatus{color:var(--dsw-alias-label-tertiary)}
+.dcc-approvalReason{font-size:11px;line-height:1.55;white-space:pre-wrap;word-break:break-word;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);max-height:130px;overflow:auto}
+.dcc-approvalActions{display:flex;gap:8px}
 .dcc-runBody{display:flex;flex-direction:column;gap:4px;padding:2px 9px 8px;border-top:.5px solid var(--dsw-alias-border-l1)}
 .dcc-runItem{font-size:11px;line-height:1.55;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}
 .dcc-runItem[data-strong]{color:var(--dsw-alias-label-primary)}
@@ -1951,7 +1972,51 @@ window.__ModuleLoader__.load({
 
     // ---------------------------------------------------------------- chat pane
 
-    function MessageRow({ t, message }) {
+    function ApprovalCard({ t, message, onDecide }) {
+      const approval = message.approval;
+      const pending = approval.status === 'pending';
+      const statusText =
+        approval.status === 'approved'
+          ? t('approval.approved')
+          : approval.status === 'rejected'
+            ? t('approval.rejected')
+            : approval.status === 'expired'
+              ? t('approval.expired')
+              : t('approval.pending');
+      return h(
+        'div',
+        { className: 'dcc-approval', 'data-status': approval.status },
+        h(
+          'div',
+          { className: 'dcc-approvalHead' },
+          h(Icon, { name: 'gear', size: 14 }),
+          h('span', {}, t('approval.title', { tool: approval.toolName || t('run.tool.default') })),
+          h('span', { className: 'dcc-approvalStatus' }, statusText),
+        ),
+        approval.reason ? h('div', { className: 'dcc-approvalReason' }, approval.reason) : null,
+        pending
+          ? h(
+              'div',
+              { className: 'dcc-approvalActions' },
+              h(
+                'button',
+                { type: 'button', className: 'dcc-btn', onClick: () => onDecide(approval.shortId, true) },
+                h(Icon, { name: 'check', size: 12 }),
+                t('approval.allow'),
+              ),
+              h(
+                'button',
+                { type: 'button', className: 'dcc-btn', onClick: () => onDecide(approval.shortId, false) },
+                h(Icon, { name: 'close', size: 12 }),
+                t('approval.deny'),
+              ),
+            )
+          : null,
+      );
+    }
+
+    function MessageRow({ t, message, onDecide }) {
+      if (message.approval) return h(ApprovalCard, { t, message, onDecide });
       if (message.kind === 'system') {
         return h('div', { className: 'dcc-msgSystem' }, message.text);
       }
@@ -2086,7 +2151,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function ConversationView({ t, items }) {
+    function ConversationView({ t, items, onDecide }) {
       const rows = buildChatRows(items);
       return h(
         'div',
@@ -2100,7 +2165,7 @@ window.__ModuleLoader__.load({
                 finished: row.finished,
                 finishedAt: row.finishedAt,
               })
-            : h(MessageRow, { key: row.message.id, t, message: row.message }),
+            : h(MessageRow, { key: row.message.id, t, message: row.message, onDecide }),
         ),
       );
     }
@@ -2258,6 +2323,8 @@ window.__ModuleLoader__.load({
                   if (payload.kind === 'done') store.refreshMessages(groupId, true).catch(() => {});
                 } else if (eventName === 'message' && payload.message) {
                   store.mergeMessage(groupId, payload.message);
+                } else if (eventName === 'approval') {
+                  store.refreshMessages(groupId, true).catch(() => {});
                 }
               }
             }
@@ -2336,6 +2403,14 @@ window.__ModuleLoader__.load({
           store.notify('error', t('notice.error', { message: String(failure.message || failure) }));
         } finally {
           setSending(false);
+        }
+      };
+
+      const decideApproval = async (shortId, allow) => {
+        try {
+          await store.send(groupId, `${allow ? '允许' : '拒绝'} ${shortId}`, false);
+        } catch (error) {
+          store.notify('error', t('notice.error', { message: String(error.message || error) }));
         }
       };
 
@@ -2450,7 +2525,7 @@ window.__ModuleLoader__.load({
           { className: 'dcc-messages dcc-scrollThin', ref: scroller },
           bucket.error ? h(ErrorLine, { text: bucket.error }) : null,
           bucket.items.length || live
-            ? h(React.Fragment, null, h(ConversationView, { t, items: bucket.items }), live ? h(LiveRun, { t, live }) : null)
+            ? h(React.Fragment, null, h(ConversationView, { t, items: bucket.items, onDecide: decideApproval }), live ? h(LiveRun, { t, live }) : null)
             : h(
                 'div',
                 { className: 'dcc-empty', style: { height: 'auto', paddingTop: 40 } },

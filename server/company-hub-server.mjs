@@ -252,6 +252,18 @@ function memberName(id) {
   return entry ? entry.name : '未知成员';
 }
 
+function approvalView(approval) {
+  return {
+    id: approval.id,
+    shortId: String(approval.id || '').slice(-6),
+    status: approval.status || 'unknown',
+    toolName: approval.toolName || '',
+    reason: approval.reason || '',
+    requestedBy: approval.requestedBy || '',
+    expiresAt: approval.expiresAt || 0,
+  };
+}
+
 function messageView(message) {
   const author = db.employee(message.authorId);
   return {
@@ -267,6 +279,9 @@ function messageView(message) {
     runId: message.runId ?? null,
     approvalId: message.approvalId ?? null,
     activity: message.activity ?? null,
+    approval: message.approvalId
+      ? approvalView(db.data.approvals.find((entry) => entry.id === message.approvalId) ?? { id: message.approvalId })
+      : null,
     createdAt: message.createdAt,
   };
 }
@@ -561,7 +576,7 @@ function expireApproval(approval) {
 
 function approvalSystemMessage(company, group, approval, text) {
   if (!db.group(group.id)) return;
-  db.data.messages.push({
+  const message = {
     id: randomId('msg'),
     companyId: company.id,
     groupId: group.id,
@@ -571,7 +586,9 @@ function approvalSystemMessage(company, group, approval, text) {
     kind: 'system',
     approvalId: approval.id,
     createdAt: now(),
-  });
+  };
+  db.data.messages.push(message);
+  broadcastGroupEvent(group.id, 'message', { message: messageView(message) });
 }
 
 function announceApproval(company, group, approval) {
@@ -580,7 +597,7 @@ function announceApproval(company, group, approval) {
     company,
     group,
     approval,
-    `⚠️ AI 主机请求执行「${approval.toolName}」${reason}\n审批编号 ${approvalShort(approval.id)}；管理员或提出者回复「允许 ${approvalShort(approval.id)}」或「拒绝 ${approvalShort(approval.id)}」，120 秒后自动拒绝。`,
+    `⚠️ AI 主机请求执行「${approval.toolName}」${reason}\n审批编号 ${approvalShort(approval.id)}；点击下方按钮，或由管理员/提出者回复「允许 ${approvalShort(approval.id)}」/「拒绝 ${approvalShort(approval.id)}」，5 分钟后自动拒绝。`,
   );
 }
 
@@ -595,6 +612,7 @@ function decideApproval(approval, employee, decision) {
   approval.decidedBy = employee.id;
   approval.decidedAt = now();
   announceDecision(group, approval, employee);
+  broadcastGroupEvent(group.id, 'approval', { approval: approvalView(approval) });
   return approval;
 }
 
@@ -618,6 +636,7 @@ function expirePendingApprovals() {
     const company = db.company(approval.companyId);
     if (group && company) {
       approvalSystemMessage(company, group, approval, `审批 ${approvalShort(approval.id)} 超时，已自动拒绝。`);
+      broadcastGroupEvent(group.id, 'approval', { approval: approvalView(approval) });
     }
     changed = true;
   }
@@ -635,7 +654,7 @@ function createApprovalRecord(company, group, requester, toolName, reason, callI
     callId: String(callId || '').slice(0, 120),
     status: 'pending',
     createdAt: now(),
-    expiresAt: now() + 120_000,
+    expiresAt: now() + 300_000,
   };
   db.data.approvals.push(approval);
   announceApproval(company, group, approval);
@@ -647,7 +666,7 @@ function waitApprovalDecision(approval) {
     const started = Date.now();
     const timer = setInterval(() => {
       expireApproval(approval);
-      if (approval.status !== 'pending' || Date.now() - started > 125_000) {
+      if (approval.status !== 'pending' || Date.now() - started > 305_000) {
         clearInterval(timer);
         resolve(approval.status === 'approved' ? 'allowed-once' : 'rejected');
       }
@@ -1487,7 +1506,7 @@ route('POST', /^\/api\/host\/approvals$/, async (req) => {
     callId: typeof body.callId === 'string' ? body.callId.slice(0, 120) : '',
     status: 'pending',
     createdAt: now(),
-    expiresAt: now() + 120_000,
+    expiresAt: now() + 300_000,
   };
   db.data.approvals.push(approval);
   announceApproval(company, group, approval);
