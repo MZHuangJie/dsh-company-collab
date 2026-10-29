@@ -100,6 +100,9 @@ window.__ModuleLoader__.load({
       'chat.taskToggle': '作为 AI 任务发送',
       'chat.taskHint': '勾选后作为本机 AI 任务执行（改代码/测试/合并）；直接 @AI 是群聊对话。',
       'chat.noMessages': '还没有消息，先说点什么吧。',
+      'run.running': '正在处理',
+      'run.finished': '已完成，过程已折叠',
+      'run.steps': '步',
       'task.title': 'AI 任务',
       'task.empty': '暂无待处理的 AI 任务',
       'task.by': '{name} 指派',
@@ -280,6 +283,9 @@ window.__ModuleLoader__.load({
       'chat.taskToggle': 'Send as AI task',
       'chat.taskHint': 'Check to run as a local AI task (code/test/merge); a plain @AI message is chat.',
       'chat.noMessages': 'No messages yet — say hello.',
+      'run.running': 'Working',
+      'run.finished': 'Done — process collapsed',
+      'run.steps': 'steps',
       'task.title': 'AI tasks',
       'task.empty': 'No pending AI tasks',
       'task.by': 'assigned by {name}',
@@ -441,6 +447,14 @@ window.__ModuleLoader__.load({
 .dcc-msgTime{font-size:10px;color:var(--dsw-alias-label-tertiary);flex:none;font-variant-numeric:tabular-nums}
 .dcc-msgText{font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:var(--dsw-alias-label-primary)}
 .dcc-msgSystem{align-self:center;max-width:88%;text-align:center;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:8px;padding:4px 10px}
+.dcc-run{border:.5px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}
+.dcc-runHead{display:flex;align-items:center;gap:6px;min-height:28px;padding:0 9px;font-size:11px;color:var(--dsw-alias-label-secondary);cursor:pointer;user-select:none}
+.dcc-runHead:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dcc-runChevron{font-size:10px;color:var(--dsw-alias-label-tertiary);width:10px}
+.dcc-runCount{margin-left:auto;font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.dcc-runBody{display:flex;flex-direction:column;gap:4px;padding:2px 9px 8px;border-top:.5px solid var(--dsw-alias-border-l1)}
+.dcc-runItem{font-size:11px;line-height:1.55;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}
+.dcc-runItem[data-strong]{color:var(--dsw-alias-label-primary)}
 .dcc-taskChip{display:inline-flex;align-items:center;gap:4px;align-self:flex-start;margin-top:2px;font-size:10px;color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent);border:.5px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 26%,transparent);border-radius:999px;padding:1px 6px}
 .dcc-taskStrip{flex:none;display:flex;align-items:center;gap:8px;padding:7px 16px;border-top:.5px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-base));overflow-x:auto}
 .dcc-taskStripLabel{font-size:11px;color:var(--dsw-alias-brand-primary);font-weight:600;flex:none}
@@ -1889,6 +1903,9 @@ window.__ModuleLoader__.load({
       if (message.kind === 'system') {
         return h('div', { className: 'dcc-msgSystem' }, message.text);
       }
+      if (message.kind === 'activity') {
+        return h('div', { className: 'dcc-runItem' }, message.text);
+      }
       return h(
         'div',
         { className: 'dcc-msg' },
@@ -1914,6 +1931,67 @@ window.__ModuleLoader__.load({
             : null,
         ),
       );
+    }
+
+    function RunActivity({ t, messages, finished }) {
+      const [open, setOpen] = React.useState(!finished);
+      React.useEffect(() => {
+        if (finished) setOpen(false);
+      }, [finished]);
+      const count = messages.length;
+      return h(
+        'div',
+        { className: 'dcc-run' },
+        h(
+          'div',
+          {
+            className: 'dcc-runHead',
+            role: 'button',
+            tabIndex: 0,
+            onClick: () => setOpen((value) => !value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setOpen((value) => !value);
+              }
+            },
+          },
+          h('span', { className: 'dcc-runChevron' }, open ? '▾' : '▸'),
+          h('span', {}, finished ? t('run.finished') : t('run.running')),
+          h('span', { className: 'dcc-runCount' }, `${count} ${t('run.steps')}`),
+        ),
+        open
+          ? h(
+              'div',
+              { className: 'dcc-runBody' },
+              messages.map((message) =>
+                h(
+                  'div',
+                  { key: message.id, className: 'dcc-runItem', 'data-strong': /^(✅|⚠️)/.test(message.text) ? '' : undefined },
+                  message.text,
+                ),
+              ),
+            )
+          : null,
+      );
+    }
+
+    function buildChatRows(items) {
+      const rows = [];
+      for (const message of items) {
+        if (message.kind === 'activity') {
+          const last = rows[rows.length - 1];
+          if (last?.type === 'activity' && last.runId === message.runId) last.items.push(message);
+          else rows.push({ type: 'activity', runId: message.runId ?? '', items: [message] });
+        } else {
+          rows.push({ type: 'message', message });
+        }
+      }
+      const finishedRuns = new Set(items.filter((message) => message.runId && message.kind !== 'activity').map((message) => message.runId));
+      for (const row of rows) {
+        if (row.type === 'activity') row.finished = finishedRuns.has(row.runId);
+      }
+      return rows;
     }
 
     function ChatPane({ t, snap, onNewGroup }) {
@@ -2104,7 +2182,16 @@ window.__ModuleLoader__.load({
           { className: 'dcc-messages dcc-scrollThin', ref: scroller },
           bucket.error ? h(ErrorLine, { text: bucket.error }) : null,
           bucket.items.length
-            ? bucket.items.map((message) => h(MessageRow, { key: message.id, t, message }))
+            ? buildChatRows(bucket.items).map((row) =>
+                row.type === 'activity'
+                  ? h(RunActivity, {
+                      key: `run-${row.runId || row.items[0].id}`,
+                      t,
+                      messages: row.items,
+                      finished: row.finished,
+                    })
+                  : h(MessageRow, { key: row.message.id, t, message: row.message }),
+              )
             : h(
                 'div',
                 { className: 'dcc-empty', style: { height: 'auto', paddingTop: 40 } },
@@ -2544,7 +2631,7 @@ window.__ModuleLoader__.load({
       const tasks = data.tasks ?? [];
       const activeGroup = groups.find((entry) => entry.id === tabActiveGroupId);
       const bucket = snap.messages[tabActiveGroupId] ?? { items: [], loading: false };
-      const recent = bucket.items.filter((message) => message.kind !== 'system').slice(-6);
+      const recent = bucket.items.filter((message) => message.kind !== 'system' && message.kind !== 'activity').slice(-6);
 
       return h(
         'div',

@@ -264,6 +264,8 @@ function messageView(message) {
     authorIsAi: Boolean(author?.isAi),
     kind: message.kind,
     taskId: message.taskId ?? null,
+    runId: message.runId ?? null,
+    approvalId: message.approvalId ?? null,
     createdAt: message.createdAt,
   };
 }
@@ -406,7 +408,7 @@ function scheduleChatReply(company, group, trigger) {
   CHAT_QUEUES.set(group.id, next);
 }
 
-function postSystemMessage(company, group, text) {
+function postSystemMessage(company, group, text, options = {}) {
   if (!db.group(group.id)) return;
   db.data.messages.push({
     id: randomId('msg'),
@@ -415,7 +417,8 @@ function postSystemMessage(company, group, text) {
     seq: ++group.seq,
     text,
     authorId: db.aiMember(company.id)?.id ?? company.id,
-    kind: 'system',
+    kind: options.kind || 'system',
+    runId: options.runId,
     createdAt: now(),
   });
   db.save().catch((error) => console.error('[company-hub] 系统消息保存失败', error));
@@ -733,7 +736,7 @@ class AcpHost {
 
   async run(text, trigger) {
     const connection = await this.ensure();
-    this.runState = { thought: '', answer: '', triggeredBy: trigger, tools: new Map() };
+    this.runState = { runId: randomId('run'), thought: '', answer: '', triggeredBy: trigger, tools: new Map() };
     const members = db
       .companyEmployees(this.company.id)
       .filter((entry) => !entry.isAi)
@@ -761,6 +764,7 @@ class AcpHost {
       text: answer,
       authorId: db.aiMember(this.company.id)?.id ?? trigger.authorId,
       kind: 'text',
+      runId: state.runId,
       createdAt: now(),
     });
     await db.save();
@@ -775,7 +779,7 @@ class AcpHost {
       return;
     }
     if (update.sessionUpdate === 'agent_thought_chunk' && update.content?.type === 'text') {
-      if (!state.thought) postSystemMessage(this.company, this.group, '💭 AI 正在思考…');
+      if (!state.thought) postSystemMessage(this.company, this.group, '💭 AI 正在思考…', { kind: 'activity', runId: state.runId });
       state.thought += update.content.text;
       if (state.thought.length > 20_000) state.thought = state.thought.slice(-20_000);
       return;
@@ -784,7 +788,7 @@ class AcpHost {
       const args = update.rawInput === undefined ? '' : `\n${clip(update.rawInput, 300)}`;
       const title = update.title || update.name || '工具调用';
       state.tools.set(update.toolCallId, { title, rawInput: update.rawInput });
-      postSystemMessage(this.company, this.group, `🔧 ${clip(title, 200)}${args}`);
+      postSystemMessage(this.company, this.group, `🔧 ${clip(title, 200)}${args}`, { kind: 'activity', runId: state.runId });
       return;
     }
     if (update.sessionUpdate === 'tool_call_update' && (update.status === 'completed' || update.status === 'failed')) {
@@ -796,12 +800,13 @@ class AcpHost {
         this.company,
         this.group,
         `${update.status === 'completed' ? '✅' : '⚠️'} ${clip(title, 200)}${resultText ? `\n${clip(resultText, 400)}` : ''}`,
+        { kind: 'activity', runId: state.runId },
       );
       return;
     }
     if (update.sessionUpdate === 'plan' && Array.isArray(update.entries)) {
       const lines = update.entries.map((entry) => `- [${entry.status}] ${entry.content}`).join('\n');
-      if (lines) postSystemMessage(this.company, this.group, `📋 计划：\n${lines}`);
+      if (lines) postSystemMessage(this.company, this.group, `📋 计划：\n${lines}`, { kind: 'activity', runId: state.runId });
     }
   }
 
