@@ -584,7 +584,11 @@ function knowledgeDocs(companyId, groupId) {
 }
 
 function knowledgeEntityName(value) {
-  return String(value || '').trim().replace(/[，。；：、,.;:!?！？\s]+$/g, '').slice(0, 40);
+  let clean = String(value || '').trim().replace(/[，。；：、,.;:!?！？\s]+$/g, '');
+  for (let index = 0; index < 3; index += 1) {
+    clean = clean.replace(/(?:的|直接|工作|向|对)$/, '').trim();
+  }
+  return clean.slice(0, 40);
 }
 
 function knowledgeFindEntity(companyId, name) {
@@ -631,9 +635,9 @@ function knowledgeExtractGraph(companyId, doc, text) {
   };
   const source = String(text || '').slice(0, 300_000);
   let match;
-  const superior = /([\u4e00-\u9fffA-Za-z0-9]{2,20})(?:的)?(?:上司|老板|领导|上级|主管|负责人)(?:是|为|：|:)\s*([\u4e00-\u9fffA-Za-z0-9]{2,20})/g;
+  const superior = /([\u4e00-\u9fffA-Za-z0-9]{2,20}?)(?:的)?(?:上司|老板|领导|上级|主管|负责人)(?:是|为|：|:)\s*([\u4e00-\u9fffA-Za-z0-9]{2,20})/g;
   while ((match = superior.exec(source))) add(match[1], '上级', match[2]);
-  const reports = /([\u4e00-\u9fffA-Za-z0-9]{2,20})(?:向|对)([\u4e00-\u9fffA-Za-z0-9]{2,20})(?:直接)?(?:汇报|报告)/g;
+  const reports = /([\u4e00-\u9fffA-Za-z0-9]{2,20}?)向([\u4e00-\u9fffA-Za-z0-9]{2,20}?)(?:直接)?(?:汇报|报告)/g;
   while ((match = reports.exec(source))) add(match[1], '汇报对象', match[2]);
   const alias = /([\u4e00-\u9fffA-Za-z0-9]{2,20})(?:[（(，,])(?:别名|又称|简称)[：:]?\s*([\u4e00-\u9fffA-Za-z0-9]{2,20})/g;
   while ((match = alias.exec(source))) {
@@ -2169,6 +2173,12 @@ route('DELETE', /^\/api\/knowledge\/([a-z0-9_]+)$/, async (req) => {
   if (!doc) throw notFound('知识文档不存在');
   db.data.knowledgeDocs = db.data.knowledgeDocs.filter((entry) => entry.id !== doc.id);
   db.data.knowledgeRelations = (db.data.knowledgeRelations ?? []).filter((relation) => relation.docId !== doc.id);
+  const activeRelations = new Set(
+    (db.data.knowledgeRelations ?? []).flatMap((relation) => [relation.subjectId, relation.objectId]),
+  );
+  db.data.knowledgeEntities = (db.data.knowledgeEntities ?? []).filter(
+    (entity) => activeRelations.has(entity.id) || (entity.aliases ?? []).length > 0,
+  );
   KNOWLEDGE_TEXT_CACHE.delete(doc.id);
   for (const file of [doc.rawPath, doc.textPath]) {
     try {
