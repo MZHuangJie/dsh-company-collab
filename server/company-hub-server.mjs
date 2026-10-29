@@ -1524,12 +1524,15 @@ class AcpHost {
       const entry = db.data.uploads.find((item) => item.id === attachment.id && item.groupId === this.group.id);
       if (!entry || !fs.existsSync(entry.path)) continue;
       if (/^image\//i.test(entry.mime || '')) {
-        if (entry.size <= 8 * 1024 * 1024) {
-          promptBlocks.push({
-            type: 'image',
-            mimeType: entry.mime,
-            data: fs.readFileSync(entry.path).toString('base64'),
-          });
+        try {
+          const attachDir = path.join(dshHostWorkspace(this.company, this.group), '.company-attachments');
+          fs.mkdirSync(attachDir, { recursive: true });
+          const ext = path.extname(entry.name).slice(0, 12) || '.png';
+          const copyPath = path.join(attachDir, `${entry.id}${ext}`);
+          fs.copyFileSync(entry.path, copyPath);
+          attachmentText.push(`[用户附图片：${entry.name}，服务器路径：${copyPath}]\n请使用 read_image 工具查看这张图片后再回答。`);
+        } catch {
+          attachmentText.push(`[用户附图片：${entry.name}（${entry.size} 字节）]`);
         }
         continue;
       }
