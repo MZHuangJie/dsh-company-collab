@@ -782,7 +782,7 @@ class AcpHost {
     }
     if (update.sessionUpdate === 'agent_thought_chunk' && update.content?.type === 'text') {
       if (!state.thought) {
-        postSystemMessage(this.company, this.group, '', {
+        postSystemMessage(this.company, this.group, '💭 思考', {
           kind: 'activity',
           runId: state.runId,
           activity: { type: 'thought', title: '思考', detail: clip(update.content.text, 300), status: 'running' },
@@ -795,7 +795,7 @@ class AcpHost {
     if (update.sessionUpdate === 'tool_call') {
       const title = update.title || update.name || '工具调用';
       state.tools.set(update.toolCallId, { title, rawInput: update.rawInput });
-      postSystemMessage(this.company, this.group, '', {
+      postSystemMessage(this.company, this.group, `🔧 ${clip(title, 200)}`, {
         kind: 'activity',
         runId: state.runId,
         activity: {
@@ -813,7 +813,7 @@ class AcpHost {
         ? update.content.map((item) => (item.type === 'content' && item.content?.type === 'text' ? item.content.text : '')).filter(Boolean).join('\n')
         : '';
       const title = update.title || state.tools.get(update.toolCallId)?.title || update.toolCallId || '工具调用';
-      postSystemMessage(this.company, this.group, '', {
+      postSystemMessage(this.company, this.group, `${update.status === 'completed' ? '✅' : '⚠️'} ${clip(title, 200)}`, {
         kind: 'activity',
         runId: state.runId,
         activity: {
@@ -829,7 +829,7 @@ class AcpHost {
     if (update.sessionUpdate === 'plan' && Array.isArray(update.entries)) {
       const lines = update.entries.map((entry) => `- [${entry.status}] ${entry.content}`).join('\n');
       if (lines) {
-        postSystemMessage(this.company, this.group, '', {
+        postSystemMessage(this.company, this.group, '📋 计划', {
           kind: 'activity',
           runId: state.runId,
           activity: { type: 'plan', title: '计划', detail: clip(lines, 800), status: 'done' },
