@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-company-collab",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "description": "DSH company collaboration mode: companies, employee accounts, contacts, groups with an auto-joined AI member, per-group Git repositories, and local AI task execution.",
   "license": "MIT",

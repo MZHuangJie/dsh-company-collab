@@ -266,6 +266,106 @@ function messageView(message) {
   };
 }
 
+const CHAT_QUEUES = new Map();
+
+function chatAiConfig() {
+  return {
+    apiKey: String(process.env.DEEPSEEK_API_KEY || ''),
+    baseUrl: String(process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, ''),
+    model: String(process.env.DEEPSEEK_MODEL || 'deepseek-flash'),
+  };
+}
+
+function scheduleChatReply(company, group, trigger) {
+  const config = chatAiConfig();
+  if (!config.apiKey) {
+    postSystemMessage(company, group, '服务端 AI 未配置 DEEPSEEK_API_KEY，暂时无法回复；代码任务仍可勾选任务发送到本机执行。');
+    return;
+  }
+  const previous = CHAT_QUEUES.get(group.id) ?? Promise.resolve();
+  const next = previous
+    .then(() => replyInChat(company, group, trigger, config))
+    .catch((error) => console.error('[company-hub] 群聊 AI 回复失败', error))
+    .finally(() => {
+      if (CHAT_QUEUES.get(group.id) === next) CHAT_QUEUES.delete(group.id);
+    });
+  CHAT_QUEUES.set(group.id, next);
+}
+
+function postSystemMessage(company, group, text) {
+  if (!db.group(group.id)) return;
+  db.data.messages.push({
+    id: randomId('msg'),
+    companyId: company.id,
+    groupId: group.id,
+    seq: ++group.seq,
+    text,
+    authorId: db.aiMember(company.id)?.id ?? company.id,
+    kind: 'system',
+    createdAt: now(),
+  });
+  db.save().catch((error) => console.error('[company-hub] 系统消息保存失败', error));
+}
+
+async function replyInChat(company, group, trigger, config) {
+  if (!db.group(group.id)) return;
+  const history = db.data.messages
+    .filter((entry) => entry.groupId === group.id && (entry.kind === 'text' || entry.kind === 'task'))
+    .slice(-40);
+  const members = db
+    .companyEmployees(company.id)
+    .filter((entry) => !entry.isAi)
+    .map((entry) => entry.name)
+    .join('、');
+  const messages = [
+    {
+      role: 'system',
+      content: [
+        `你是「${company.name}」企业群「${group.name}」里的 AI 助理，群成员：${members || '成员'}。`,
+        '这是普通群聊，不是代码任务。请结合整个群聊历史，直接、简洁地用中文回答成员的问题。',
+        '不要在回复中声称自己修改了文件、执行了命令或创建了分支；需要改代码时，提醒成员勾选「作为 AI 任务发送」交给本机执行。',
+        '不要编造没有发生的事。',
+      ].join('\n'),
+    },
+  ];
+  for (const entry of history) {
+    const author = db.employee(entry.authorId);
+    messages.push({
+      role: author?.isAi ? 'assistant' : 'user',
+      content: author?.isAi ? entry.text : `${author?.name ?? '成员'}：${entry.text}`,
+    });
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90_000);
+  let content = '';
+  try {
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${config.apiKey}` },
+      body: JSON.stringify({ model: config.model, messages, temperature: 0.7, max_tokens: 1200, stream: false }),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`DeepSeek HTTP ${response.status}: ${text.slice(0, 240)}`);
+    const data = JSON.parse(text);
+    content = String(data?.choices?.[0]?.message?.content ?? '').trim();
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!content || !db.group(group.id)) return;
+  db.data.messages.push({
+    id: randomId('msg'),
+    companyId: company.id,
+    groupId: group.id,
+    seq: ++group.seq,
+    text: content,
+    authorId: db.aiMember(company.id)?.id ?? trigger.authorId,
+    kind: 'text',
+    createdAt: now(),
+  });
+  await db.save();
+}
+
 function expireOfflineJobs() {
   let changed = false;
   for (const job of db.data.aiJobs) {
@@ -1071,7 +1171,7 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
   db.data.messages.push(message);
   let task = null;
   let job = null;
-  if (wantsTask || mentioned) {
+  if (wantsTask) {
     if (!employeeOnline(auth.employee)) {
       db.data.messages.push({
         id: randomId('msg'),
@@ -1126,6 +1226,9 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
     }
   }
   await db.save();
+  if (mentioned && !wantsTask) {
+    scheduleChatReply(auth.company, group, message);
+  }
   return {
     message: messageView(message),
     task: task ? { id: task.id, status: task.status } : null,
