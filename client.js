@@ -2575,7 +2575,6 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         setDraft('');
-        setAsTask(false);
       }, [groupId]);
 
       React.useEffect(() => {
