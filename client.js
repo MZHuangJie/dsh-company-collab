@@ -483,7 +483,24 @@ window.__ModuleLoader__.load({
 .dcc-msgHead{display:flex;align-items:center;gap:7px;min-width:0}
 .dcc-msgName{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcc-msgTime{font-size:10.5px;color:var(--dsw-alias-label-tertiary);flex:none;font-variant-numeric:tabular-nums}
-.dcc-msgText{font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:var(--dsw-alias-label-primary)}
+.dcc-msgText{font-size:13px;line-height:1.7;white-space:normal;word-break:break-word;color:var(--dsw-alias-label-primary)}
+.dcc-md{display:flex;flex-direction:column;gap:7px;min-width:0}
+.dcc-mdP{margin:0;white-space:pre-wrap;line-height:1.7}
+.dcc-md h1,.dcc-md h2,.dcc-md h3,.dcc-md h4,.dcc-md h5,.dcc-md h6{margin:2px 0 0;line-height:1.35;font-weight:600;color:var(--dsw-alias-label-primary)}
+.dcc-md h1{font-size:18px}.dcc-md h2{font-size:16px}.dcc-md h3{font-size:14px}.dcc-md h4,.dcc-md h5,.dcc-md h6{font-size:13px}
+.dcc-mdList{margin:0;padding-left:20px;display:flex;flex-direction:column;gap:3px;color:var(--dsw-alias-label-primary)}
+.dcc-mdCode{padding:1px 5px;border-radius:5px;background:var(--dsw-alias-markdown-code-block,var(--dsw-alias-bg-layer-1));border:.5px solid var(--dsw-alias-border-l1);font-family:var(--dsw-font-markdown-code-block-small,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:11.5px}
+.dcc-mdPre{margin:0;padding:10px 12px;border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-markdown-code-block,var(--dsw-alias-bg-layer-1));overflow:auto;font-family:var(--dsw-font-markdown-code-block-small,ui-monospace,SFMono-Regular,Menlo,monospace);font-size:11.5px;line-height:1.55;color:var(--dsw-alias-label-secondary)}
+.dcc-mdLang{margin-bottom:6px;color:var(--dsw-alias-label-tertiary);font-size:10px;text-transform:uppercase;letter-spacing:.04em}
+.dcc-mdTableWrap{overflow:auto;border:.5px solid var(--dsw-alias-border-l1);border-radius:var(--dsw-radius-md)}
+.dcc-mdTable{border-collapse:collapse;width:100%;font-size:12px;line-height:1.5}
+.dcc-mdTable th,.dcc-mdTable td{padding:7px 10px;border-bottom:.5px solid var(--dsw-alias-border-l1);text-align:left;vertical-align:top}
+.dcc-mdTable th{background:var(--dsw-alias-bg-layer-1);font-weight:600;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.dcc-mdTable tr:last-child td{border-bottom:0}
+.dcc-mdQuote{margin:0;padding-left:10px;border-left:2px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary)}
+.dcc-md a{color:var(--dsw-alias-brand-primary);text-decoration:none}
+.dcc-md a:hover{text-decoration:underline}
+.dcc-md hr{border:0;border-top:.5px solid var(--dsw-alias-border-l1);margin:4px 0;width:100%}
 .dcc-msgSystem{align-self:center;max-width:88%;text-align:center;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:8px;padding:4px 10px}
 .dcc-run{border:0;border-radius:0;background:transparent;overflow:visible}
 .dcc-runHead{display:flex;align-items:center;gap:6px;min-height:26px;padding:0 2px;font-size:11px;color:var(--dsw-alias-label-secondary);cursor:pointer;user-select:none}
@@ -664,6 +681,147 @@ window.__ModuleLoader__.load({
         hash = (hash * 31 + value.charCodeAt(index)) % 360;
       }
       return hash;
+    }
+
+    function renderInline(text, keyPrefix) {
+      const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|\[[^\]\n]+\]\((https?:\/\/[^)\s]+)\))/g;
+      const nodes = [];
+      let last = 0;
+      let match;
+      let index = 0;
+      while ((match = pattern.exec(text))) {
+        if (match.index > last) nodes.push(text.slice(last, match.index));
+        const token = match[0];
+        const key = `${keyPrefix}-${index++}`;
+        if (token.startsWith('`')) nodes.push(h('code', { key, className: 'dcc-mdCode' }, token.slice(1, -1)));
+        else if (token.startsWith('**') || token.startsWith('__')) nodes.push(h('strong', { key }, token.slice(2, -2)));
+        else if (token.startsWith('~~')) nodes.push(h('del', { key }, token.slice(2, -2)));
+        else if (token.startsWith('*')) nodes.push(h('em', { key }, token.slice(1, -1)));
+        else {
+          const link = /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/.exec(token);
+          if (link) nodes.push(h('a', { key, href: link[2], target: '_blank', rel: 'noreferrer noopener' }, link[1]));
+          else nodes.push(token);
+        }
+        last = match.index + token.length;
+      }
+      if (last < text.length) nodes.push(text.slice(last));
+      return nodes;
+    }
+
+    function MarkdownText({ text }) {
+      const source = String(text || '').replace(/\r\n?/g, '\n');
+      const lines = source.split('\n');
+      const blocks = [];
+      let index = 0;
+      let key = 0;
+      const nextKey = (name) => `${name}-${key++}`;
+      const isTableLine = (line) => /^\s*\|.*\|\s*$/.test(line);
+      while (index < lines.length) {
+        const line = lines[index];
+        if (!line.trim()) {
+          index += 1;
+          continue;
+        }
+        if (line.trim().startsWith('```')) {
+          const language = line.trim().slice(3).trim();
+          const code = [];
+          index += 1;
+          while (index < lines.length && !lines[index].trim().startsWith('```')) {
+            code.push(lines[index]);
+            index += 1;
+          }
+          index += 1;
+          blocks.push(
+            h(
+              'pre',
+              { key: nextKey('pre'), className: 'dcc-mdPre' },
+              language ? h('div', { className: 'dcc-mdLang' }, language) : null,
+              h('code', null, code.join('\n')),
+            ),
+          );
+          continue;
+        }
+        const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+        if (heading) {
+          blocks.push(h(`h${Math.min(6, heading[1].length)}`, { key: nextKey('h') }, renderInline(heading[2], `h${key}`)));
+          index += 1;
+          continue;
+        }
+        if (/^\s*(---+|___+|\*\*\*+)\s*$/.test(line)) {
+          blocks.push(h('hr', { key: nextKey('hr') }));
+          index += 1;
+          continue;
+        }
+        if (isTableLine(line)) {
+          const rows = [];
+          while (index < lines.length && isTableLine(lines[index])) {
+            rows.push(lines[index]);
+            index += 1;
+          }
+          const cells = rows.map((row) => row.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim()));
+          const body = cells.filter((row) => !row.every((cell) => /^:?-{3,}:?$/.test(cell)));
+          if (body.length) {
+            blocks.push(
+              h(
+                'div',
+                { key: nextKey('tableWrap'), className: 'dcc-mdTableWrap' },
+                h(
+                  'table',
+                  { className: 'dcc-mdTable' },
+                  h('thead', null, h('tr', null, body[0].map((cell, cellIndex) => h('th', { key: `th-${cellIndex}` }, renderInline(cell, `th-${cellIndex}`))))),
+                  h(
+                    'tbody',
+                    null,
+                    body.slice(1).map((row, rowIndex) =>
+                      h('tr', { key: `tr-${rowIndex}` }, row.map((cell, cellIndex) => h('td', { key: `td-${cellIndex}` }, renderInline(cell, `td-${rowIndex}-${cellIndex}`)))),
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }
+          continue;
+        }
+        const unordered = /^\s*[-*+]\s+(.*)$/;
+        const ordered = /^\s*\d+\.\s+(.*)$/;
+        if (unordered.test(line) || ordered.test(line)) {
+          const isOrdered = ordered.test(line);
+          const pattern = isOrdered ? ordered : unordered;
+          const items = [];
+          while (index < lines.length && pattern.test(lines[index])) {
+            items.push(pattern.exec(lines[index])[1]);
+            index += 1;
+          }
+          blocks.push(
+            h(
+              isOrdered ? 'ol' : 'ul',
+              { key: nextKey('list'), className: 'dcc-mdList' },
+              items.map((item, itemIndex) => h('li', { key: `li-${itemIndex}` }, renderInline(item, `li-${key}-${itemIndex}`))),
+            ),
+          );
+          continue;
+        }
+        if (/^\s*>\s?/.test(line)) {
+          const quote = [];
+          while (index < lines.length && /^\s*>\s?/.test(lines[index])) {
+            quote.push(lines[index].replace(/^\s*>\s?/, ''));
+            index += 1;
+          }
+          blocks.push(h('blockquote', { key: nextKey('quote'), className: 'dcc-mdQuote' }, renderInline(quote.join('\n'), `quote-${key}`)));
+          continue;
+        }
+        const paragraph = [];
+        while (index < lines.length && lines[index].trim() && !/^\s*(#{1,6}\s|```|[-*+]\s|\d+\.\s|>\s?)/.test(lines[index]) && !isTableLine(lines[index])) {
+          paragraph.push(lines[index]);
+          index += 1;
+        }
+        if (!paragraph.length) {
+          paragraph.push(line);
+          index += 1;
+        }
+        blocks.push(h('p', { key: nextKey('p'), className: 'dcc-mdP' }, renderInline(paragraph.join('\n'), `p-${key}`)));
+      }
+      return h('div', { className: 'dcc-md' }, blocks);
     }
 
     function formatTime(timestamp) {
@@ -2049,7 +2207,7 @@ window.__ModuleLoader__.load({
             message.authorIsAi ? h(AiTag, { t }) : null,
             h('span', { className: 'dcc-msgTime' }, formatTime(message.createdAt)),
           ),
-          h('div', { className: 'dcc-msgText' }, message.text),
+          h('div', { className: 'dcc-msgText' }, h(MarkdownText, { text: message.text })),
           message.taskId
             ? h(
                 'span',
@@ -2260,7 +2418,7 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dcc-liveAnswer' },
               h('div', { className: 'dcc-msgHead' }, h('span', { className: 'dcc-msgName' }, t('run.ai')), h(AiTag, { t })),
-              h('div', { className: 'dcc-msgText' }, live.answer),
+              h('div', { className: 'dcc-msgText' }, h(MarkdownText, { text: live.answer })),
             )
           : null,
       );
