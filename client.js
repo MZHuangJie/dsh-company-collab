@@ -104,6 +104,14 @@ window.__ModuleLoader__.load({
       'run.finished': '已完成，过程已折叠',
       'run.steps': '步',
       'run.failed': '失败',
+      'run.tool.bash': '运行命令',
+      'run.tool.read': '读取文件',
+      'run.tool.edit': '编辑文件',
+      'run.tool.write': '写入文件',
+      'run.tool.glob': '查找文件',
+      'run.tool.grep': '搜索内容',
+      'run.tool.webSearch': '联网搜索',
+      'run.tool.default': '工具调用',
       'task.title': 'AI 任务',
       'task.empty': '暂无待处理的 AI 任务',
       'task.by': '{name} 指派',
@@ -288,6 +296,14 @@ window.__ModuleLoader__.load({
       'run.finished': 'Done — process collapsed',
       'run.steps': 'steps',
       'run.failed': 'Failed',
+      'run.tool.bash': 'Run command',
+      'run.tool.read': 'Read file',
+      'run.tool.edit': 'Edit file',
+      'run.tool.write': 'Write file',
+      'run.tool.glob': 'Find files',
+      'run.tool.grep': 'Search content',
+      'run.tool.webSearch': 'Web search',
+      'run.tool.default': 'Tool call',
       'task.title': 'AI tasks',
       'task.empty': 'No pending AI tasks',
       'task.by': 'assigned by {name}',
@@ -454,6 +470,8 @@ window.__ModuleLoader__.load({
 .dcc-runHead:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dcc-runChevron{font-size:10px;color:var(--dsw-alias-label-tertiary);width:10px}
 .dcc-runCount{margin-left:auto;font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.dcc-runDuration{font-size:10px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
+.dcc-conv{display:flex;flex-direction:column;gap:14px;min-width:0}
 .dcc-runBody{display:flex;flex-direction:column;gap:4px;padding:2px 9px 8px;border-top:.5px solid var(--dsw-alias-border-l1)}
 .dcc-runItem{font-size:11px;line-height:1.55;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}
 .dcc-runItem[data-strong]{color:var(--dsw-alias-label-primary)}
@@ -1950,6 +1968,124 @@ window.__ModuleLoader__.load({
     }
 
     const RUN_ICONS = { thought: 'sparkle', tool: 'gear', plan: 'folder', status: 'check' };
+    const TOOL_TITLES = {
+      bash: ['run.tool.bash', '运行命令'],
+      read: ['run.tool.read', '读取文件'],
+      edit: ['run.tool.edit', '编辑文件'],
+      write: ['run.tool.write', '写入文件'],
+      glob: ['run.tool.glob', '查找文件'],
+      grep: ['run.tool.grep', '搜索内容'],
+      web_search: ['run.tool.webSearch', '联网搜索'],
+    };
+
+    function toolTitle(t, step) {
+      const key = String(step.title || '').toLowerCase();
+      const mapped = TOOL_TITLES[key];
+      if (mapped) return t(mapped[0], undefined, mapped[1]);
+      return step.title || t('run.tool.default', undefined, '工具调用');
+    }
+
+    function formatDuration(ms) {
+      if (!Number.isFinite(ms) || ms <= 0) return '';
+      const seconds = ms / 1000;
+      if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+      return `${Math.floor(seconds / 60)}m${Math.round(seconds % 60)}s`;
+    }
+
+    function RunActivity({ t, messages, finished, finishedAt }) {
+      const [open, setOpen] = React.useState(!finished);
+      React.useEffect(() => {
+        if (finished) setOpen(false);
+      }, [finished]);
+      const steps = buildRunSteps(messages);
+      const count = steps.length;
+      const startedAt = messages[0]?.createdAt;
+      const duration = finished && finishedAt && startedAt ? formatDuration(finishedAt - startedAt) : '';
+      return h(
+        'div',
+        { className: 'dcc-run' },
+        h(
+          'div',
+          {
+            className: 'dcc-runHead',
+            role: 'button',
+            tabIndex: 0,
+            onClick: () => setOpen((value) => !value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                setOpen((value) => !value);
+              }
+            },
+          },
+          h('span', { className: 'dcc-runChevron' }, open ? '▾' : '▸'),
+          h('span', {}, finished ? t('run.finished') : t('run.running')),
+          duration ? h('span', { className: 'dcc-runDuration' }, duration) : null,
+          h('span', { className: 'dcc-runCount' }, `${count} ${t('run.steps')}`),
+        ),
+        open
+          ? h(
+              'div',
+              { className: 'dcc-runBody' },
+              steps.map((step) =>
+                h(
+                  'div',
+                  {
+                    key: step.id,
+                    className: 'dcc-step',
+                    'data-type': step.type || 'status',
+                    'data-status': step.status || 'done',
+                  },
+                  h(
+                    'span',
+                    { className: 'dcc-stepIcon' },
+                    h(Icon, { name: RUN_ICONS[step.type] || 'sparkle', size: 13 }),
+                  ),
+                  h(
+                    'div',
+                    { className: 'dcc-stepBody' },
+                    h(
+                      'div',
+                      { className: 'dcc-stepHead' },
+                      h('span', { className: 'dcc-stepTitle' }, step.type === 'tool' ? toolTitle(t, step) : step.title || '过程'),
+                      step.status === 'running'
+                        ? h('span', { className: 'dcc-stepStatus' }, t('run.running'))
+                        : step.status === 'failed'
+                          ? h('span', { className: 'dcc-stepStatus', 'data-failed': '' }, t('run.failed'))
+                          : null,
+                    ),
+                    step.detail
+                      ? h('div', { className: 'dcc-stepDetail' }, step.detail)
+                      : null,
+                    step.result
+                      ? h('div', { className: 'dcc-stepResult' }, step.result)
+                      : null,
+                  ),
+                ),
+              ),
+            )
+          : null,
+      );
+    }
+
+    function ConversationView({ t, items }) {
+      const rows = buildChatRows(items);
+      return h(
+        'div',
+        { className: 'dcc-conv' },
+        rows.map((row) =>
+          row.type === 'activity'
+            ? h(RunActivity, {
+                key: `run-${row.runId || row.items[0].id}`,
+                t,
+                messages: row.items,
+                finished: row.finished,
+                finishedAt: row.finishedAt,
+              })
+            : h(MessageRow, { key: row.message.id, t, message: row.message }),
+        ),
+      );
+    }
 
     function buildRunSteps(messages) {
       const steps = [];
@@ -2058,9 +2194,14 @@ window.__ModuleLoader__.load({
           rows.push({ type: 'message', message });
         }
       }
-      const finishedRuns = new Set(items.filter((message) => message.runId && message.kind !== 'activity').map((message) => message.runId));
+      const finishedRuns = new Map(
+        items.filter((message) => message.runId && message.kind !== 'activity').map((message) => [message.runId, message.createdAt]),
+      );
       for (const row of rows) {
-        if (row.type === 'activity') row.finished = finishedRuns.has(row.runId);
+        if (row.type === 'activity') {
+          row.finished = finishedRuns.has(row.runId);
+          row.finishedAt = finishedRuns.get(row.runId);
+        }
       }
       return rows;
     }
@@ -2253,16 +2394,7 @@ window.__ModuleLoader__.load({
           { className: 'dcc-messages dcc-scrollThin', ref: scroller },
           bucket.error ? h(ErrorLine, { text: bucket.error }) : null,
           bucket.items.length
-            ? buildChatRows(bucket.items).map((row) =>
-                row.type === 'activity'
-                  ? h(RunActivity, {
-                      key: `run-${row.runId || row.items[0].id}`,
-                      t,
-                      messages: row.items,
-                      finished: row.finished,
-                    })
-                  : h(MessageRow, { key: row.message.id, t, message: row.message }),
-              )
+            ? h(ConversationView, { t, items: bucket.items })
             : h(
                 'div',
                 { className: 'dcc-empty', style: { height: 'auto', paddingTop: 40 } },
