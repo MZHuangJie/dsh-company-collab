@@ -125,6 +125,8 @@ window.__ModuleLoader__.load({
       'run.running': '正在处理',
       'run.finished': '已完成，过程已折叠',
       'run.finishedShort': '已完成',
+      'run.completedWithTime': '已完成，用时 {duration}',
+      'run.durationSeconds': '{seconds}秒',
       'run.used': '用时 {duration}',
       'run.exploring': '正在深度探索中',
       'run.stop': '停止',
@@ -403,6 +405,8 @@ window.__ModuleLoader__.load({
       'run.running': 'Working',
       'run.finished': 'Done — process collapsed',
       'run.finishedShort': 'Done',
+      'run.completedWithTime': 'Completed in {duration}',
+      'run.durationSeconds': '{seconds}s',
       'run.used': '{duration}',
       'run.exploring': 'Deep diving',
       'run.stop': 'Stop',
@@ -2790,12 +2794,13 @@ window.__ModuleLoader__.load({
     }
 
     function RunActivity({ t, messages, finished, finishedAt }) {
-      const [open, setOpen] = React.useState(true);
+      const [open, setOpen] = React.useState(!finished);
+      React.useEffect(() => {
+        if (finished) setOpen(false);
+      }, [finished]);
       const steps = buildRunSteps(messages);
-      const count = steps.length;
-      const toolCount = steps.filter((step) => step.type === 'tool').length;
       const startedAt = messages[0]?.createdAt;
-      const duration = finished && finishedAt && startedAt ? formatDuration(finishedAt - startedAt) : '';
+      const durationSeconds = finished && finishedAt && startedAt ? Math.max(1, Math.round((finishedAt - startedAt) / 1000)) : 0;
       return h(
         'div',
         { className: 'dcc-run' },
@@ -2818,7 +2823,11 @@ window.__ModuleLoader__.load({
           h(
             'span',
             { className: 'dcc-runLabel' },
-            finished ? (toolCount ? t('run.executed') : t('run.finishedShort')) : toolCount ? t('run.executing') : t('run.running'),
+            finished
+              ? durationSeconds
+                ? t('run.completedWithTime', { duration: t('run.durationSeconds', { seconds: durationSeconds }) })
+                : t('run.finishedShort')
+              : t('run.running'),
           ),
         ),
         open
