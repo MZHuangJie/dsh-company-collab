@@ -483,13 +483,14 @@ window.__ModuleLoader__.load({
 .dcc-msgTime{font-size:10px;color:var(--dsw-alias-label-tertiary);flex:none;font-variant-numeric:tabular-nums}
 .dcc-msgText{font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:var(--dsw-alias-label-primary)}
 .dcc-msgSystem{align-self:center;max-width:88%;text-align:center;font-size:11px;line-height:1.5;color:var(--dsw-alias-label-tertiary);background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);border-radius:8px;padding:4px 10px}
-.dcc-run{border:.5px solid var(--dsw-alias-border-l1);border-radius:9px;background:var(--dsw-alias-bg-layer-1);overflow:hidden}
-.dcc-runHead{display:flex;align-items:center;gap:6px;min-height:28px;padding:0 9px;font-size:11px;color:var(--dsw-alias-label-secondary);cursor:pointer;user-select:none}
-.dcc-runHead:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.dcc-run{border:0;border-radius:0;background:transparent;overflow:visible}
+.dcc-runHead{display:flex;align-items:center;gap:6px;min-height:26px;padding:0 2px;font-size:11px;color:var(--dsw-alias-label-secondary);cursor:pointer;user-select:none}
+.dcc-runHead:hover{background:transparent;color:var(--dsw-alias-label-primary)}
 .dcc-runChevron{font-size:10px;color:var(--dsw-alias-label-tertiary);width:10px}
 .dcc-runCount{margin-left:auto;font-size:10px;color:var(--dsw-alias-label-tertiary)}
 .dcc-runDuration{font-size:10px;color:var(--dsw-alias-label-tertiary);font-variant-numeric:tabular-nums}
-.dcc-conv{display:flex;flex-direction:column;gap:14px;min-width:0}
+.dcc-conv{display:flex;flex-direction:column;gap:18px;min-width:0}
+.dcc-turn{display:flex;flex-direction:column;gap:8px;min-width:0}
 .dcc-live{display:flex;flex-direction:column;gap:10px}
 .dcc-liveAnswer{display:flex;flex-direction:column;gap:4px;padding-left:0}
 .dcc-approval{display:flex;flex-direction:column;gap:7px;padding:9px 10px;border:.5px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary) 38%,var(--dsw-alias-border-l1));border-radius:10px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 7%,var(--dsw-alias-bg-layer-1))}
@@ -502,7 +503,7 @@ window.__ModuleLoader__.load({
 .dcc-approvalBanner{flex:none;display:flex;align-items:center;gap:8px;padding:8px 16px;border-bottom:.5px solid color-mix(in srgb,var(--dsw-alias-state-warn-primary) 35%,var(--dsw-alias-border-l1));background:color-mix(in srgb,var(--dsw-alias-state-warn-primary) 9%,var(--dsw-alias-bg-layer-1))}
 .dcc-approvalBannerText{flex:none;font-size:11px;font-weight:600;color:var(--dsw-alias-label-primary)}
 .dcc-approvalBannerReason{min-width:0;flex:1;font-size:10px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dcc-runBody{display:flex;flex-direction:column;gap:4px;padding:2px 9px 8px;border-top:.5px solid var(--dsw-alias-border-l1)}
+.dcc-runBody{display:flex;flex-direction:column;gap:2px;padding:2px 2px 4px;border-top:0}
 .dcc-runItem{font-size:11px;line-height:1.55;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}
 .dcc-runItem[data-strong]{color:var(--dsw-alias-label-primary)}
 .dcc-step{display:flex;gap:8px;padding:7px 0;border-top:.5px solid color-mix(in srgb,var(--dsw-alias-border-l1) 65%,transparent)}
@@ -2161,13 +2162,19 @@ window.__ModuleLoader__.load({
         { className: 'dcc-conv' },
         rows.map((row) =>
           row.type === 'activity'
-            ? h(RunActivity, {
-                key: `run-${row.runId || row.items[0].id}`,
-                t,
-                messages: row.items,
-                finished: row.finished,
-                finishedAt: row.finishedAt,
-              })
+            ? h(
+                'div',
+                { key: `run-${row.runId || row.items[0].id}`, className: 'dcc-turn' },
+                h(RunActivity, {
+                  t,
+                  messages: row.items,
+                  finished: row.finished,
+                  finishedAt: row.finishedAt,
+                }),
+                row.finalMessage
+                  ? h(MessageRow, { key: row.finalMessage.id, t, message: row.finalMessage, onDecide })
+                  : null,
+              )
             : h(MessageRow, { key: row.message.id, t, message: row.message, onDecide }),
         ),
       );
@@ -2203,18 +2210,16 @@ window.__ModuleLoader__.load({
           const last = rows[rows.length - 1];
           if (last?.type === 'activity' && last.runId === message.runId) last.items.push(message);
           else rows.push({ type: 'activity', runId: message.runId ?? '', items: [message] });
-        } else {
-          rows.push({ type: 'message', message });
+          continue;
         }
-      }
-      const finishedRuns = new Map(
-        items.filter((message) => message.runId && message.kind !== 'activity').map((message) => [message.runId, message.createdAt]),
-      );
-      for (const row of rows) {
-        if (row.type === 'activity') {
-          row.finished = finishedRuns.has(row.runId);
-          row.finishedAt = finishedRuns.get(row.runId);
+        const last = rows[rows.length - 1];
+        if (message.runId && last?.type === 'activity' && last.runId === message.runId) {
+          last.finalMessage = message;
+          last.finished = true;
+          last.finishedAt = message.createdAt;
+          continue;
         }
+        rows.push({ type: 'message', message });
       }
       return rows;
     }
