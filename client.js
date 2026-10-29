@@ -2566,20 +2566,18 @@ window.__ModuleLoader__.load({
                         h('span', { className: 'dcc-rowName' }, h('span', {}, person.name)),
                         h('span', { className: 'dcc-rowSub' }, person.role || t('role.member')),
                       ),
-                      person.isAi
-                        ? null
-                        : h(
-                            'button',
-                            {
-                              type: 'button',
-                              className: 'dcc-iconBtn',
-                              title: t('direct.start'),
-                              'aria-label': t('direct.start'),
-                              style: { width: 22, height: 22 },
-                              onClick: () => store.openDirect(person.id).catch((failure) => store.notify('error', String(failure.message || failure))),
-                            },
-                            h(Icon, { name: 'chat', size: 12 }),
-                          ),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'dcc-iconBtn',
+                          title: t('direct.start'),
+                          'aria-label': t('direct.start'),
+                          style: { width: 22, height: 22 },
+                          onClick: () => store.openDirect(person.id).catch((failure) => store.notify('error', String(failure.message || failure))),
+                        },
+                        h(Icon, { name: 'chat', size: 12 }),
+                      ),
                       h(
                         'button',
                         {
@@ -2607,20 +2605,18 @@ window.__ModuleLoader__.load({
                         h('span', { className: 'dcc-rowName' }, h('span', {}, person.name), person.isAi ? h(AiTag, { t }) : null),
                         h('span', { className: 'dcc-rowSub' }, person.role || t('role.member')),
                       ),
-                      person.isAi
-                        ? null
-                        : h(
-                            'button',
-                            {
-                              type: 'button',
-                              className: 'dcc-iconBtn',
-                              title: t('direct.start'),
-                              'aria-label': t('direct.start'),
-                              style: { width: 22, height: 22 },
-                              onClick: () => store.openDirect(person.id).catch((failure) => store.notify('error', String(failure.message || failure))),
-                            },
-                            h(Icon, { name: 'chat', size: 12 }),
-                          ),
+                      h(
+                        'button',
+                        {
+                          type: 'button',
+                          className: 'dcc-iconBtn',
+                          title: t('direct.start'),
+                          'aria-label': t('direct.start'),
+                          style: { width: 22, height: 22 },
+                          onClick: () => store.openDirect(person.id).catch((failure) => store.notify('error', String(failure.message || failure))),
+                        },
+                        h(Icon, { name: 'chat', size: 12 }),
+                      ),
                       contactIds.has(person.id) || person.isAi
                         ? null
                         : h(

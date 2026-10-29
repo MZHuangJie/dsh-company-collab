@@ -2678,8 +2678,8 @@ route('POST', /^\/api\/directs$/, async (req) => {
   const body = await readJsonBody(req);
   const employeeId = str(body.employeeId, '同事', { max: 80 });
   const target = db.employee(employeeId);
-  if (!target || target.companyId !== auth.company.id || target.isAi || target.id === auth.employee.id) {
-    throw bad('请选择公司里的同事');
+  if (!target || target.companyId !== auth.company.id || target.id === auth.employee.id) {
+    throw bad('请选择公司里的同事或 AI 助理');
   }
   let group = db.data.groups.find(
     (entry) =>
@@ -2889,7 +2889,10 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
     .filter(Boolean);
   const mentionsHuman = humanNames.some((name) => text.includes(`@${name}`));
   const toAi = body.toAi === undefined ? true : body.toAi === true;
-  const shouldReply = author.isAi === false && group.kind !== 'direct' && (mentionsAi || (!mentionsHuman && toAi));
+  const directAi = group.kind === 'direct' && Boolean(ai && group.memberIds.includes(ai.id));
+  const shouldReply =
+    author.isAi === false &&
+    (group.kind === 'direct' ? directAi : mentionsAi || (!mentionsHuman && toAi));
   const approvalMatch = author.isAi === false ? /^\s*(允许|批准|拒绝|approve|reject)\s+([a-z0-9]{6})\s*$/i.exec(text) : null;
   if (approvalMatch) {
     const approval = db.data.approvals
