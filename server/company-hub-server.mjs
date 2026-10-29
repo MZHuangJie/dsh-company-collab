@@ -617,12 +617,36 @@ function knowledgeUpsertEntity(companyId, name, type = 'person') {
   return entity;
 }
 
+function knowledgeMergeEntities(companyId, entity, other) {
+  if (!entity || !other || entity.id === other.id) return;
+  for (const name of [other.name, ...(other.aliases ?? [])]) {
+    if (name !== entity.name && !entity.aliases.includes(name)) entity.aliases.push(name);
+  }
+  for (const relation of db.data.knowledgeRelations ?? []) {
+    if (relation.subjectId === other.id) relation.subjectId = entity.id;
+    if (relation.objectId === other.id) relation.objectId = entity.id;
+  }
+  db.data.knowledgeEntities = db.data.knowledgeEntities.filter((entry) => entry.id !== other.id);
+}
+
+function knowledgeNormalizePredicate(value) {
+  const text = String(value || '').trim().slice(0, 40);
+  if (/汇报|报告/.test(text)) return '汇报对象';
+  if (/上司|上级|领导|老板|主管/.test(text)) return '上级';
+  if (/负责|管理/.test(text)) return '负责';
+  if (/合作|伙伴/.test(text)) return '合作';
+  return text;
+}
+
 function knowledgeAddEntity(companyId, name, type, aliases = []) {
   const entity = knowledgeUpsertEntity(companyId, name, type);
   if (!entity) return null;
   for (const alias of aliases) {
     const clean = knowledgeEntityName(alias);
-    if (clean && clean !== entity.name && !entity.aliases.includes(clean)) entity.aliases.push(clean);
+    if (!clean || clean === entity.name) continue;
+    const other = knowledgeFindEntity(companyId, clean);
+    if (other && other.id !== entity.id) knowledgeMergeEntities(companyId, entity, other);
+    if (!entity.aliases.includes(clean)) entity.aliases.push(clean);
   }
   return entity;
 }
@@ -631,11 +655,13 @@ function knowledgeAddRelation(companyId, docId, subjectName, predicate, objectNa
   const subject = knowledgeAddEntity(companyId, subjectName);
   const object = knowledgeAddEntity(companyId, objectName);
   if (!subject || !object || subject.id === object.id) return;
+  const normalized = knowledgeNormalizePredicate(predicate);
+  if (!normalized) return;
   const exists = (db.data.knowledgeRelations ?? []).some(
     (relation) =>
       relation.docId === docId &&
       relation.subjectId === subject.id &&
-      relation.predicate === predicate &&
+      relation.predicate === normalized &&
       relation.objectId === object.id,
   );
   if (exists) return;
@@ -644,7 +670,7 @@ function knowledgeAddRelation(companyId, docId, subjectName, predicate, objectNa
     companyId,
     docId,
     subjectId: subject.id,
-    predicate,
+    predicate: normalized,
     objectId: object.id,
     createdAt: now(),
   });
@@ -700,18 +726,7 @@ async function enrichKnowledgeGraphWithLlm(company, doc, text) {
 function knowledgeExtractGraph(companyId, doc, text) {
   db.data.knowledgeRelations = (db.data.knowledgeRelations ?? []).filter((relation) => relation.docId !== doc.id);
   const add = (subjectName, predicate, objectName) => {
-    const subject = knowledgeUpsertEntity(companyId, subjectName);
-    const object = knowledgeUpsertEntity(companyId, objectName);
-    if (!subject || !object || subject.id === object.id) return;
-    db.data.knowledgeRelations.push({
-      id: randomId('rel'),
-      companyId,
-      docId: doc.id,
-      subjectId: subject.id,
-      predicate,
-      objectId: object.id,
-      createdAt: now(),
-    });
+    knowledgeAddRelation(companyId, doc.id, subjectName, predicate, objectName);
   };
   const source = String(text || '').slice(0, 300_000);
   let match;
