@@ -158,6 +158,9 @@ class CompanyHub {
       // A different server means a different company; keeping the old login would mix data.
       this.saveCurrentAccount();
       this.state.identity = null;
+      this.state.gitToken = '';
+      this.state.groupRepos = {};
+      this.state.deviceSecrets = {};
       this.remote = null;
       this.remoteAt = 0;
     }
@@ -317,6 +320,9 @@ class CompanyHub {
     this.saveCurrentAccount();
     try {
       await this.configure(serverUrl);
+      this.state.gitToken = '';
+      this.state.groupRepos = {};
+      this.state.deviceSecrets = {};
       await this.login(companyId, employeeName, accessCode);
       this.persistCurrentAccount();
       return this.snapshot();
@@ -333,6 +339,9 @@ class CompanyHub {
     this.saveCurrentAccount();
     try {
       await this.configure(serverUrl);
+      this.state.gitToken = '';
+      this.state.groupRepos = {};
+      this.state.deviceSecrets = {};
       await this.createCompany(companyName, employeeName);
       this.persistCurrentAccount();
       return this.snapshot();
@@ -499,7 +508,7 @@ class CompanyHub {
     const group = this.groupById(groupId);
     if (!group) throw new HubError('群组不存在，请先刷新');
     if (!group.repoPath) throw new HubError('该群还没有 Git 仓库，请重新创建群组');
-    await this.ensureGitToken();
+    await this.ensureGitToken(true);
     const target = path.resolve(String(localPath || '').trim());
     if (!target) throw new HubError('请选择本地目录');
     const repoUrl = this.groupRepoUrl(group);
