@@ -93,7 +93,7 @@ window.__ModuleLoader__.load({
       'people.ai': 'AI',
       'chat.empty': '选择一个群组开始协作',
       'chat.emptyDesc': '左侧选择群组，或新建一个群组并把同事与 AI 拉进来。',
-      'chat.placeholder': '在「{group}」里说点什么…（Enter 发送，Shift+Enter 换行）',
+      'chat.placeholder': '在「{group}」里说点什么…（@ 提及成员，Enter 发送）',
       'chat.delete': '删除群组',
       'chat.deleteConfirm': '删除群组「{name}」？群聊历史、任务和服务端 Git 仓库会一起删除，且不可恢复。',
       'chat.deleted': '群组已删除',
@@ -273,7 +273,7 @@ window.__ModuleLoader__.load({
       'people.ai': 'AI',
       'chat.empty': 'Pick a group to start collaborating',
       'chat.emptyDesc': 'Choose a group on the left, or create one with colleagues and the AI.',
-      'chat.placeholder': 'Message #{group} (Enter to send, Shift+Enter for a new line)',
+      'chat.placeholder': 'Message #{group} (type @ to mention, Enter to send)',
       'chat.delete': 'Delete group',
       'chat.deleteConfirm': 'Delete group "{name}"? Its chat history, tasks, and the server Git repository will be removed permanently.',
       'chat.deleted': 'Group deleted',
@@ -447,7 +447,7 @@ window.__ModuleLoader__.load({
 .dcc-taskStripChip{flex:none;max-width:280px;display:inline-flex;align-items:center;gap:5px;height:23px;padding:0 8px;border-radius:999px;border:.5px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 26%,transparent);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:11px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dcc-taskStripChip:hover{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-brand-primary)}
 .dcc-composer{flex:none;padding:8px 16px 14px;display:flex;flex-direction:column;gap:6px}
-.dcc-composerBox{display:flex;flex-direction:column;border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);padding:7px 8px 6px;transition:border-color .12s}
+.dcc-composerBox{position:relative;display:flex;flex-direction:column;border:.5px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-1);padding:7px 8px 6px;transition:border-color .12s}
 .dcc-composerBox:focus-within{border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 55%,var(--dsw-alias-border-l2))}
 .dcc-composerBox textarea{width:100%;box-sizing:border-box;border:0;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:1.55;resize:none;outline:none;max-height:140px;padding:2px 2px 4px}
 .dcc-composerBox textarea::placeholder{color:var(--dsw-alias-label-tertiary)}
@@ -456,6 +456,12 @@ window.__ModuleLoader__.load({
 .dcc-taskToggle:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dcc-taskToggle[data-on]{color:var(--dsw-alias-brand-primary);border-color:color-mix(in srgb,var(--dsw-alias-brand-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,transparent)}
 .dcc-sendBtn{height:28px;min-width:64px}
+.dcc-mentionMenu{position:absolute;left:8px;right:8px;bottom:calc(100% + 6px);z-index:30;max-height:240px;overflow-y:auto;display:flex;flex-direction:column;gap:2px;padding:4px;border:.5px solid var(--dsw-alias-border-l2);border-radius:10px;background:var(--dsw-alias-bg-layer-1);box-shadow:0 12px 32px rgba(0,0,0,.28)}
+.dcc-mentionItem{width:100%;display:flex;align-items:center;gap:8px;padding:6px 8px;border:0;border-radius:7px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;text-align:left;cursor:pointer}
+.dcc-mentionItem:hover,.dcc-mentionItem[data-active]{background:var(--dsw-alias-interactive-bg-hover)}
+.dcc-mentionAvatar{flex:none;width:20px;height:20px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 14%,var(--dsw-alias-bg-layer-2));border:.5px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 28%,transparent)}
+.dcc-mentionName{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcc-mentionMeta{margin-left:auto;flex:none;font-size:10px;color:var(--dsw-alias-label-tertiary)}
 .dcc-side{min-height:0;overflow-y:auto;border-left:.5px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);padding:12px;display:flex;flex-direction:column;gap:10px}
 .dcc-card{border:.5px solid var(--dsw-alias-border-l1);border-radius:11px;background:var(--dsw-alias-bg-base);padding:11px;display:flex;flex-direction:column;gap:8px}
 .dcc-cardHead{display:flex;align-items:center;justify-content:space-between;gap:8px}
@@ -1919,8 +1925,18 @@ window.__ModuleLoader__.load({
       const [draft, setDraft] = React.useState('');
       const [asTask, setAsTask] = React.useState(false);
       const [sending, setSending] = React.useState(false);
+      const [mention, setMention] = React.useState(null);
       const scroller = React.useRef(null);
       const textarea = React.useRef(null);
+
+      const mentionCandidates = React.useMemo(() => {
+        const members = group?.members ?? [];
+        const query = String(mention?.query ?? '').trim().toLowerCase();
+        return members
+          .filter((member) => !query || member.name.toLowerCase().includes(query) || member.id.toLowerCase().includes(query))
+          .slice(0, 8);
+      }, [group?.id, group?.members, mention?.query]);
+      const mentionIndex = mention ? Math.min(Number(mention.index) || 0, Math.max(0, mentionCandidates.length - 1)) : 0;
 
       React.useEffect(() => {
         if (!scroller.current) return;
@@ -1964,6 +1980,7 @@ window.__ModuleLoader__.load({
         const text = draft.trim();
         if (!text || sending) return;
         setSending(true);
+        setMention(null);
         try {
           await store.send(group.id, text, asTask);
           setDraft('');
@@ -1974,6 +1991,36 @@ window.__ModuleLoader__.load({
         } finally {
           setSending(false);
         }
+      };
+
+      const updateMention = (value, caret) => {
+        const before = value.slice(0, caret);
+        const at = before.lastIndexOf('@');
+        if (at < 0) {
+          setMention(null);
+          return;
+        }
+        const query = before.slice(at + 1);
+        if (/[\s@]/.test(query) || query.length > 24) {
+          setMention(null);
+          return;
+        }
+        setMention({ start: at, end: caret, query, index: 0 });
+      };
+
+      const chooseMention = (member) => {
+        if (!mention || !member) return;
+        const inserted = `@${member.name} `;
+        const next = draft.slice(0, mention.start) + inserted + draft.slice(mention.end);
+        const caret = mention.start + inserted.length;
+        setDraft(next);
+        setMention(null);
+        requestAnimationFrame(() => {
+          const element = textarea.current;
+          if (!element) return;
+          element.focus();
+          element.setSelectionRange(caret, caret);
+        });
       };
 
       return h(
@@ -2099,14 +2146,62 @@ window.__ModuleLoader__.load({
               rows: 1,
               value: draft,
               placeholder: t('chat.placeholder', { group: group.name }),
-              onChange: (event) => setDraft(event.target.value),
+              onChange: (event) => {
+                const value = event.target.value;
+                setDraft(value);
+                updateMention(value, event.target.selectionStart ?? value.length);
+              },
+              onBlur: () => setTimeout(() => setMention(null), 150),
               onKeyDown: (event) => {
-                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                const composing = event.nativeEvent.isComposing;
+                if (mention && mentionCandidates.length) {
+                  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    const delta = event.key === 'ArrowDown' ? 1 : -1;
+                    const next = (mentionIndex + delta + mentionCandidates.length) % mentionCandidates.length;
+                    setMention({ ...mention, index: next });
+                    return;
+                  }
+                  if ((event.key === 'Enter' || event.key === 'Tab') && !composing && !event.shiftKey) {
+                    event.preventDefault();
+                    chooseMention(mentionCandidates[mentionIndex]);
+                    return;
+                  }
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    setMention(null);
+                    return;
+                  }
+                }
+                if (event.key === 'Enter' && !event.shiftKey && !composing) {
                   event.preventDefault();
                   send();
                 }
               },
             }),
+            mention && mentionCandidates.length
+              ? h(
+                  'div',
+                  { className: 'dcc-mentionMenu', onMouseDown: (event) => event.preventDefault() },
+                  mentionCandidates.map((member, index) =>
+                    h(
+                      'button',
+                      {
+                        key: member.id,
+                        type: 'button',
+                        className: 'dcc-mentionItem',
+                        'data-active': index === mentionIndex ? '' : undefined,
+                        onMouseDown: (event) => event.preventDefault(),
+                        onClick: () => chooseMention(member),
+                      },
+                      h('span', { className: 'dcc-mentionAvatar' }, String(member.name || '?').slice(0, 1)),
+                      h('span', { className: 'dcc-mentionName' }, member.name),
+                      member.isAi ? h(AiTag, { t }) : null,
+                      h('span', { className: 'dcc-mentionMeta' }, member.id.slice(-6)),
+                    ),
+                  ),
+                )
+              : null,
             h(
               'div',
               { className: 'dcc-composerRow' },
