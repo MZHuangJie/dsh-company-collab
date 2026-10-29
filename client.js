@@ -214,6 +214,10 @@ window.__ModuleLoader__.load({
       'modal.group.repoMode': 'Git 仓库',
       'modal.group.repoNew': '新建远程仓库',
       'modal.group.repoLocal': '使用本地目录',
+      'modal.group.visibility': '仓库可见性',
+      'modal.group.private': 'Private（仅群成员）',
+      'modal.group.public': 'Public（可公开 clone）',
+      'modal.group.visibilityHint': 'Public 仓库允许匿名只读 clone；写入仍需群成员 Git Token。',
       'modal.group.branch': '默认分支',
       'modal.group.gitignore': '.gitignore 模板',
       'modal.group.none': '不生成',
@@ -435,6 +439,10 @@ window.__ModuleLoader__.load({
       'modal.group.repoMode': 'Git repository',
       'modal.group.repoNew': 'Create remote repo',
       'modal.group.repoLocal': 'Use local directory',
+      'modal.group.visibility': 'Visibility',
+      'modal.group.private': 'Private (members only)',
+      'modal.group.public': 'Public (anonymous clone)',
+      'modal.group.visibilityHint': 'Public allows anonymous read-only clone; writes still require a member Git token.',
       'modal.group.branch': 'Default branch',
       'modal.group.gitignore': '.gitignore template',
       'modal.group.none': 'None',
@@ -1708,6 +1716,7 @@ window.__ModuleLoader__.load({
       const contactIds = new Set((data.contacts ?? []).map((entry) => entry.id));
       const [name, setName] = React.useState('');
       const [repoMode, setRepoMode] = React.useState('new');
+      const [visibility, setVisibility] = React.useState('private');
       const [branch, setBranch] = React.useState('main');
       const [description, setDescription] = React.useState('');
       const [gitignore, setGitignore] = React.useState('node');
@@ -1736,8 +1745,8 @@ window.__ModuleLoader__.load({
         try {
           const repo =
             repoMode === 'new'
-              ? { mode: 'new', defaultBranch: branch.trim() || 'main', description: description.trim(), gitignore, initReadme }
-              : { mode: 'local', initReadme: false, gitignore: 'none' };
+              ? { mode: 'new', defaultBranch: branch.trim() || 'main', description: description.trim(), gitignore, initReadme, visibility }
+              : { mode: 'local', initReadme: false, gitignore: 'none', visibility };
           const result = await store.createGroup(name, [...selected], repo);
           const groupId = result.group?.id;
           if (repoMode === 'local' && groupId && localPath.trim()) {
@@ -1829,6 +1838,26 @@ window.__ModuleLoader__.load({
           ? h(
               React.Fragment,
               null,
+              h(
+                'div',
+                { className: 'dcc-field' },
+                h('span', { className: 'dcc-label' }, t('modal.group.visibility')),
+                h(
+                  'div',
+                  { className: 'dcc-segment' },
+                  h(
+                    'button',
+                    { type: 'button', 'data-on': visibility === 'private' ? '' : undefined, onClick: () => setVisibility('private') },
+                    t('modal.group.private'),
+                  ),
+                  h(
+                    'button',
+                    { type: 'button', 'data-on': visibility === 'public' ? '' : undefined, onClick: () => setVisibility('public') },
+                    t('modal.group.public'),
+                  ),
+                ),
+                h('p', { className: 'dcc-note' }, t('modal.group.visibilityHint')),
+              ),
               h(
                 'div',
                 { className: 'dcc-inline' },

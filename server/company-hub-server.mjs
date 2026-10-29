@@ -1103,13 +1103,6 @@ function parseBasicAuth(req) {
 }
 
 function serveGit(req, res, url) {
-  const credentials = parseBasicAuth(req);
-  const employee = credentials ? db.employee(credentials.username) : null;
-  if (!employee || !employee.gitTokenHash || employee.gitTokenHash !== gitTokenHash(employee.id, credentials.password)) {
-    res.writeHead(401, { 'www-authenticate': 'Basic realm="company-git"' });
-    res.end('authentication required');
-    return;
-  }
   const relative = url.pathname.slice('/git/'.length);
   const parts = relative.split('/');
   const companyId = parts[0];
@@ -1121,10 +1114,28 @@ function serveGit(req, res, url) {
   }
   const groupId = repoName.replace(/\.git$/, '');
   const group = db.data.groups.find((entry) => entry.id === groupId && entry.companyId === companyId);
-  if (!group || !group.memberIds.includes(employee.id)) {
-    res.writeHead(403);
-    res.end('not a group member');
+  if (!group) {
+    res.writeHead(404);
+    res.end('repository not found');
     return;
+  }
+  const service = url.searchParams.get('service') || (relative.endsWith('/git-receive-pack') ? 'git-receive-pack' : relative.endsWith('/git-upload-pack') ? 'git-upload-pack' : '');
+  const writing = service === 'git-receive-pack';
+  const publicRead = !writing && group.visibility === 'public';
+  const credentials = parseBasicAuth(req);
+  const employee = credentials ? db.employee(credentials.username) : null;
+  const validToken = Boolean(employee && employee.gitTokenHash && employee.gitTokenHash === gitTokenHash(employee.id, credentials.password));
+  if (writing || !publicRead) {
+    if (!validToken) {
+      res.writeHead(401, { 'www-authenticate': 'Basic realm="company-git"' });
+      res.end('authentication required');
+      return;
+    }
+    if (!group.memberIds.includes(employee.id)) {
+      res.writeHead(403);
+      res.end('not a group member');
+      return;
+    }
   }
   const repoRelative = group.repoPath || groupRepoRelative(companyId, groupId);
   const repoDir = groupRepoPath(repoRelative);
@@ -1142,7 +1153,7 @@ function serveGit(req, res, url) {
     QUERY_STRING: url.search ? url.search.slice(1) : '',
     CONTENT_TYPE: req.headers['content-type'] ?? '',
     CONTENT_LENGTH: req.headers['content-length'] ?? '',
-    REMOTE_USER: employee.id,
+    REMOTE_USER: validToken ? employee.id : 'anonymous',
     REMOTE_ADDR: req.socket.remoteAddress ?? '',
     GIT_PROTOCOL: req.headers['git-protocol'] ?? '',
   };
@@ -1269,6 +1280,7 @@ function stateView(auth) {
         id: group.id,
         name: group.name,
         createdAt: group.createdAt,
+        visibility: group.visibility === 'public' ? 'public' : 'private',
         memberIds: group.memberIds,
         members: group.memberIds.map((id) => {
           const member = db.employee(id);
@@ -1771,6 +1783,7 @@ route('POST', /^\/api\/groups$/, async (req) => {
     createdBy: auth.employee.id,
     createdAt: now(),
     seq: 0,
+    visibility: body.repo?.visibility === 'public' ? 'public' : 'private',
   };
   group.repoPath = initGroupRepo(auth.company.id, group.id, name, body.repo && typeof body.repo === 'object' ? body.repo : {});
   db.data.groups.push(group);
