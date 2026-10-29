@@ -593,14 +593,27 @@ class CompanyHub {
     return result.items ?? [];
   }
 
-  async uploadKnowledge(groupId, name, dataBase64, mime) {
+  async uploadKnowledge(groupId, name, dataBase64, mime, meta = {}) {
     const result = await this.fetchJson('POST', '/api/knowledge', {
       name,
       dataBase64,
       mime,
       groupId: groupId || null,
+      version: meta.version || '',
+      effectiveAt: meta.effectiveAt || null,
+      authority: meta.authority || 'normal',
     });
     return result.doc;
+  }
+
+  async knowledgeEntities() {
+    const result = await this.fetchJson('GET', '/api/knowledge/entities');
+    return result.items ?? [];
+  }
+
+  async addKnowledgeAlias(alias, canonical) {
+    const result = await this.fetchJson('POST', '/api/knowledge/entities/alias', { alias, canonical });
+    return result.entity;
   }
 
   async deleteKnowledge(docId) {
@@ -786,9 +799,17 @@ function handleApi(req, res) {
         return { ok: true, items: await hub.knowledge(groupId) };
       }
       case 'POST knowledge': {
-        const doc = await hub.uploadKnowledge(body.groupId, body.name, body.dataBase64, body.mime);
+        const doc = await hub.uploadKnowledge(body.groupId, body.name, body.dataBase64, body.mime, {
+          version: body.version,
+          effectiveAt: body.effectiveAt,
+          authority: body.authority,
+        });
         return { ok: true, doc };
       }
+      case 'GET knowledge/entities':
+        return { ok: true, items: await hub.knowledgeEntities() };
+      case 'POST knowledge/alias':
+        return hub.addKnowledgeAlias(body.alias, body.canonical).then((entity) => ({ ok: true, entity }));
       case 'POST knowledge/delete':
         return hub.deleteKnowledge(body.docId);
       case 'POST knowledge/search':

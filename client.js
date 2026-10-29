@@ -222,6 +222,18 @@ window.__ModuleLoader__.load({
       'knowledge.upload': '上传文档',
       'knowledge.tooLarge': '文件超过 10MB',
       'knowledge.deleteConfirm': '删除知识文档「{name}」？',
+      'knowledge.version': '版本（可选）',
+      'knowledge.authorityNormal': '普通',
+      'knowledge.authorityDepartment': '部门',
+      'knowledge.authorityOfficial': '公司正式',
+      'knowledge.metaHint': '生效日期/权威级用于冲突排序',
+      'knowledge.entities': '实体与别名',
+      'knowledge.noAlias': '暂无别名',
+      'knowledge.noEntity': '还没有识别到实体',
+      'knowledge.aliasPlaceholder': '别名，如 张主管',
+      'knowledge.canonicalPlaceholder': '实体名，如 张三',
+      'knowledge.linkAlias': '关联别名',
+      'knowledge.aliasHint': '别名用于把不同文档里的称呼归到同一实体；没有依据时模型应说明不确定。',
       'modal.group.repoMode': 'Git 仓库',
       'modal.group.repoNew': '新建远程仓库',
       'modal.group.repoLocal': '使用本地目录',
@@ -458,6 +470,18 @@ window.__ModuleLoader__.load({
       'knowledge.upload': 'Upload',
       'knowledge.tooLarge': 'File exceeds 10MB',
       'knowledge.deleteConfirm': 'Delete knowledge document "{name}"?',
+      'knowledge.version': 'Version (optional)',
+      'knowledge.authorityNormal': 'Normal',
+      'knowledge.authorityDepartment': 'Department',
+      'knowledge.authorityOfficial': 'Official',
+      'knowledge.metaHint': 'Effective date / authority drive conflict ordering',
+      'knowledge.entities': 'Entities and aliases',
+      'knowledge.noAlias': 'No aliases',
+      'knowledge.noEntity': 'No entities detected yet',
+      'knowledge.aliasPlaceholder': 'Alias, e.g. Manager Zhang',
+      'knowledge.canonicalPlaceholder': 'Canonical name, e.g. Zhang San',
+      'knowledge.linkAlias': 'Link alias',
+      'knowledge.aliasHint': 'Aliases map names across documents to one entity; without evidence the model must say it is uncertain.',
       'modal.group.repoMode': 'Git repository',
       'modal.group.repoNew': 'Create remote repo',
       'modal.group.repoLocal': 'Use local directory',
@@ -1272,9 +1296,14 @@ window.__ModuleLoader__.load({
           const json = await request('GET', `/knowledge?groupId=${encodeURIComponent(groupId || '')}`);
           return json.items ?? [];
         },
-        uploadKnowledge: (groupId, name, dataBase64, mime) =>
-          request('POST', '/knowledge', { groupId, name, dataBase64, mime }),
+        uploadKnowledge: (groupId, name, dataBase64, mime, meta = {}) =>
+          request('POST', '/knowledge', { groupId, name, dataBase64, mime, ...meta }),
         deleteKnowledge: (docId) => request('POST', '/knowledge/delete', { docId }),
+        knowledgeEntities: async () => {
+          const json = await request('GET', '/knowledge/entities');
+          return json.items ?? [];
+        },
+        addKnowledgeAlias: (alias, canonical) => request('POST', '/knowledge/alias', { alias, canonical }),
         searchKnowledge: async (query, groupId) => {
           const json = await request('POST', '/knowledge/search', { query, groupId });
           return json.items ?? [];
@@ -2716,12 +2745,19 @@ window.__ModuleLoader__.load({
       const [loading, setLoading] = React.useState(true);
       const [busy, setBusy] = React.useState(false);
       const [scope, setScope] = React.useState('group');
+      const [version, setVersion] = React.useState('');
+      const [effectiveAt, setEffectiveAt] = React.useState('');
+      const [authority, setAuthority] = React.useState('normal');
+      const [entities, setEntities] = React.useState([]);
+      const [alias, setAlias] = React.useState('');
+      const [canonical, setCanonical] = React.useState('');
       const [error, setError] = React.useState('');
       const fileInput = React.useRef(null);
 
       const load = async () => {
         try {
           setItems(await store.knowledge(group.id));
+          setEntities(await store.knowledgeEntities());
           setError('');
         } catch (failure) {
           setError(String(failure.message || failure));
@@ -2749,7 +2785,11 @@ window.__ModuleLoader__.load({
             reader.onerror = () => reject(reader.error);
             reader.readAsDataURL(file);
           });
-          await store.uploadKnowledge(scope === 'group' ? group.id : null, file.name, dataBase64, file.type);
+          await store.uploadKnowledge(scope === 'group' ? group.id : null, file.name, dataBase64, file.type, {
+            version,
+            effectiveAt: effectiveAt ? Date.parse(`${effectiveAt}T00:00:00`) : null,
+            authority,
+          });
           await load();
         } catch (failure) {
           setError(String(failure.message || failure));
@@ -2764,6 +2804,22 @@ window.__ModuleLoader__.load({
         setBusy(true);
         try {
           await store.deleteKnowledge(doc.id);
+          await load();
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setBusy(false);
+        }
+      };
+
+      const linkAlias = async () => {
+        if (!alias.trim() || !canonical.trim()) return;
+        setBusy(true);
+        setError('');
+        try {
+          await store.addKnowledgeAlias(alias.trim(), canonical.trim());
+          setAlias('');
+          setCanonical('');
           await load();
         } catch (failure) {
           setError(String(failure.message || failure));
@@ -2810,6 +2866,32 @@ window.__ModuleLoader__.load({
             busy ? t('loading') : t('knowledge.upload'),
           ),
         ),
+        h(
+          'div',
+          { className: 'dcc-inline', style: { alignItems: 'center' } },
+          h('input', {
+            className: 'dcc-input',
+            value: version,
+            placeholder: t('knowledge.version'),
+            onChange: (event) => setVersion(event.target.value),
+            style: { width: 100 },
+          }),
+          h('input', {
+            className: 'dcc-input',
+            type: 'date',
+            value: effectiveAt,
+            onChange: (event) => setEffectiveAt(event.target.value),
+            style: { width: 145 },
+          }),
+          h(
+            'select',
+            { className: 'dcc-input', value: authority, onChange: (event) => setAuthority(event.target.value), style: { width: 150 } },
+            h('option', { value: 'normal' }, t('knowledge.authorityNormal')),
+            h('option', { value: 'department' }, t('knowledge.authorityDepartment')),
+            h('option', { value: 'official' }, t('knowledge.authorityOfficial')),
+          ),
+          h('span', { className: 'dcc-note' }, t('knowledge.metaHint')),
+        ),
         error ? h(ErrorLine, { text: error }) : null,
         h(
           'div',
@@ -2839,6 +2921,54 @@ window.__ModuleLoader__.load({
                   ),
                 )
               : h('div', { className: 'dcc-note' }, t('knowledge.empty')),
+        ),
+        h(
+          'div',
+          { className: 'dcc-field' },
+          h('span', { className: 'dcc-label' }, t('knowledge.entities')),
+          h(
+            'div',
+            { className: 'dcc-knowledgeList' },
+            entities.length
+              ? entities.slice(0, 30).map((entity) =>
+                  h(
+                    'div',
+                    { key: entity.id, className: 'dcc-knowledgeItem' },
+                    h(
+                      'div',
+                      { className: 'dcc-knowledgeMain' },
+                      h('div', { className: 'dcc-knowledgeName' }, entity.name),
+                      h('div', { className: 'dcc-note' }, entity.aliases?.length ? `别名：${entity.aliases.join('、')}` : t('knowledge.noAlias')),
+                    ),
+                  ),
+                )
+              : h('div', { className: 'dcc-note' }, t('knowledge.noEntity')),
+          ),
+          h(
+            'div',
+            { className: 'dcc-inline', style: { alignItems: 'center' } },
+            h('input', {
+              className: 'dcc-input',
+              value: alias,
+              placeholder: t('knowledge.aliasPlaceholder'),
+              onChange: (event) => setAlias(event.target.value),
+              style: { flex: 1 },
+            }),
+            h('span', { className: 'dcc-note' }, '→'),
+            h('input', {
+              className: 'dcc-input',
+              value: canonical,
+              placeholder: t('knowledge.canonicalPlaceholder'),
+              onChange: (event) => setCanonical(event.target.value),
+              style: { flex: 1 },
+            }),
+            h(
+              'button',
+              { type: 'button', className: 'dcc-btn', disabled: busy || !alias.trim() || !canonical.trim(), onClick: linkAlias },
+              t('knowledge.linkAlias'),
+            ),
+          ),
+          h('p', { className: 'dcc-note' }, t('knowledge.aliasHint')),
         ),
       );
     }

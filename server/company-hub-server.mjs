@@ -137,6 +137,8 @@ function emptyDb() {
     aiJobs: [],
     approvals: [],
     knowledgeDocs: [],
+    knowledgeEntities: [],
+    knowledgeRelations: [],
   };
 }
 
@@ -581,17 +583,112 @@ function knowledgeDocs(companyId, groupId) {
   );
 }
 
+function knowledgeEntityName(value) {
+  return String(value || '').trim().replace(/[，。；：、,.;:!?！？\s]+$/g, '').slice(0, 40);
+}
+
+function knowledgeFindEntity(companyId, name) {
+  return (db.data.knowledgeEntities ?? []).find(
+    (entity) => entity.companyId === companyId && (entity.name === name || entity.aliases.includes(name)),
+  );
+}
+
+function knowledgeUpsertEntity(companyId, name, type = 'person') {
+  const clean = knowledgeEntityName(name);
+  if (!clean || clean.length < 2) return null;
+  const existing = knowledgeFindEntity(companyId, clean);
+  if (existing) {
+    if (!existing.aliases.includes(clean) && existing.name !== clean) existing.aliases.push(clean);
+    return existing;
+  }
+  const entity = {
+    id: randomId('ent'),
+    companyId,
+    name: clean,
+    type,
+    aliases: [],
+    createdAt: now(),
+  };
+  db.data.knowledgeEntities.push(entity);
+  return entity;
+}
+
+function knowledgeExtractGraph(companyId, doc, text) {
+  db.data.knowledgeRelations = (db.data.knowledgeRelations ?? []).filter((relation) => relation.docId !== doc.id);
+  const add = (subjectName, predicate, objectName) => {
+    const subject = knowledgeUpsertEntity(companyId, subjectName);
+    const object = knowledgeUpsertEntity(companyId, objectName);
+    if (!subject || !object || subject.id === object.id) return;
+    db.data.knowledgeRelations.push({
+      id: randomId('rel'),
+      companyId,
+      docId: doc.id,
+      subjectId: subject.id,
+      predicate,
+      objectId: object.id,
+      createdAt: now(),
+    });
+  };
+  const source = String(text || '').slice(0, 300_000);
+  let match;
+  const superior = /([\u4e00-\u9fffA-Za-z0-9]{2,20})(?:的)?(?:上司|老板|领导|上级|主管|负责人)(?:是|为|：|:)\s*([\u4e00-\u9fffA-Za-z0-9]{2,20})/g;
+  while ((match = superior.exec(source))) add(match[1], '上级', match[2]);
+  const reports = /([\u4e00-\u9fffA-Za-z0-9]{2,20})(?:向|对)([\u4e00-\u9fffA-Za-z0-9]{2,20})(?:直接)?(?:汇报|报告)/g;
+  while ((match = reports.exec(source))) add(match[1], '汇报对象', match[2]);
+  const alias = /([\u4e00-\u9fffA-Za-z0-9]{2,20})(?:[（(，,])(?:别名|又称|简称)[：:]?\s*([\u4e00-\u9fffA-Za-z0-9]{2,20})/g;
+  while ((match = alias.exec(source))) {
+    const entity = knowledgeUpsertEntity(companyId, match[1]);
+    const other = knowledgeEntityName(match[2]);
+    if (entity && other && other !== entity.name && !entity.aliases.includes(other)) entity.aliases.push(other);
+  }
+}
+
+function knowledgeQueryAliases(companyId, query) {
+  const found = new Set();
+  for (const entity of db.data.knowledgeEntities ?? []) {
+    if (entity.companyId !== companyId) continue;
+    const names = [entity.name, ...(entity.aliases ?? [])];
+    if (names.some((name) => name && String(query).includes(name))) {
+      for (const name of names) found.add(name);
+    }
+  }
+  return [...found];
+}
+
+function knowledgeCharBigrams(text) {
+  const clean = String(text || '').toLowerCase().replace(/\s+/g, '');
+  const grams = new Set();
+  for (let index = 0; index < clean.length - 1; index += 1) grams.add(clean.slice(index, index + 2));
+  return grams;
+}
+
+function knowledgeOverlap(left, right) {
+  if (!left.size || !right.size) return 0;
+  let shared = 0;
+  for (const gram of left) if (right.has(gram)) shared += 1;
+  return shared / Math.sqrt(left.size * right.size);
+}
+
+function knowledgeDocTime(doc) {
+  const value = Number(doc.effectiveAt) || Number(doc.createdAt) || 0;
+  return value;
+}
+
 function searchKnowledge(companyId, groupId, query, limit = 5) {
-  const queryTokens = [...new Set(knowledgeTokens(query))];
+  const aliases = knowledgeQueryAliases(companyId, query);
+  const expandedQuery = [query, ...aliases].join(' ');
+  const queryTokens = [...new Set(knowledgeTokens(expandedQuery))];
   if (!queryTokens.length) return [];
+  const queryGrams = knowledgeCharBigrams(query);
   const records = [];
   for (const doc of knowledgeDocs(companyId, groupId)) {
+    if (Number(doc.effectiveAt) > now() + 60_000) continue;
     const chunks = knowledgeChunks(knowledgeTextFor(doc));
     chunks.forEach((text, index) => {
       const tokens = knowledgeTokens(text);
       const counts = new Map();
       for (const token of tokens) counts.set(token, (counts.get(token) || 0) + 1);
-      records.push({ doc, index, text, tokens, counts, nameTokens: new Set(knowledgeTokens(doc.name)) });
+      records.push({ doc, index, text, tokens, counts, nameTokens: new Set(knowledgeTokens(doc.name)), grams: knowledgeCharBigrams(text) });
     });
   }
   if (!records.length) return [];
@@ -614,6 +711,11 @@ function searchKnowledge(companyId, groupId, query, limit = 5) {
       score += idf * ((frequency * (k1 + 1)) / (frequency + k1 * (1 - b + (b * record.tokens.length) / average)));
       if (record.nameTokens.has(token)) score += 1.2;
     }
+    score += 3 * knowledgeOverlap(queryGrams, record.grams);
+    if (record.doc.authority === 'official') score += 1.2;
+    else if (record.doc.authority === 'department') score += 0.6;
+    const age = Math.max(0, now() - knowledgeDocTime(record.doc));
+    score += Math.max(0, 0.8 - age / (1000 * 60 * 60 * 24 * 365));
     return { ...record, score };
   });
   return scored
@@ -626,6 +728,9 @@ function searchKnowledge(companyId, groupId, query, limit = 5) {
       chunkIndex: record.index,
       text: record.text.slice(0, 1800),
       score: Number(record.score.toFixed(3)),
+      version: record.doc.version || '',
+      effectiveAt: record.doc.effectiveAt || null,
+      authority: record.doc.authority || 'normal',
     }));
 }
 
@@ -633,17 +738,42 @@ function knowledgePrompt(company, group, query) {
   const hits = searchKnowledge(company.id, group.id, query, 5);
   if (!hits.length) return '';
   const body = hits
-    .map((hit, index) => `[资料 ${index + 1}] 来源：${hit.docName}（片段 ${hit.chunkIndex + 1}）\n${hit.text}`)
+    .map((hit, index) => {
+      const meta = [
+        hit.version ? `版本 ${hit.version}` : '',
+        hit.effectiveAt ? `生效 ${new Date(hit.effectiveAt).toISOString().slice(0, 10)}` : '',
+        hit.authority === 'official' ? '权威：公司正式' : hit.authority === 'department' ? '权威：部门' : '',
+      ].filter(Boolean).join('；');
+      return `[资料 ${index + 1}] 来源：${hit.docName}${meta ? `（${meta}）` : ''}（片段 ${hit.chunkIndex + 1}）\n${hit.text}`;
+    })
     .join('\n\n---\n\n');
+  const aliases = knowledgeQueryAliases(company.id, query);
+  const entityLines = [];
+  for (const entity of db.data.knowledgeEntities ?? []) {
+    if (entity.companyId !== company.id) continue;
+    if (!aliases.includes(entity.name) && !aliases.some((alias) => entity.aliases.includes(alias))) continue;
+    const relations = (db.data.knowledgeRelations ?? [])
+      .filter((relation) => relation.companyId === company.id && (relation.subjectId === entity.id || relation.objectId === entity.id))
+      .slice(0, 8)
+      .map((relation) => {
+        const subject = db.data.knowledgeEntities.find((entry) => entry.id === relation.subjectId);
+        const object = db.data.knowledgeEntities.find((entry) => entry.id === relation.objectId);
+        return subject && object ? `${subject.name} ${relation.predicate} ${object.name}` : '';
+      })
+      .filter(Boolean);
+    entityLines.push(`实体：${entity.name}${entity.aliases.length ? `（别名：${entity.aliases.join('、')}）` : ''}${relations.length ? `\n关系：${relations.join('；')}` : ''}`);
+  }
   return [
     '以下是从公司知识库检索到的资料。回答时优先使用这些资料；资料不足时明确说明，不要编造。',
-    '引用资料时在句末标注来源文件名。',
+    '若不同资料版本冲突，按生效时间/权威级别说明冲突，不要强行合并。',
+    '引用资料时在句末标注来源文件名；只有资料明确说明同一实体时才合并称呼，否则说明“可能是同一人，需确认”。',
+    entityLines.length ? `\n【实体关系】\n${entityLines.join('\n')}` : '',
     '',
     body.slice(0, 7000),
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
-function saveKnowledgeDoc(company, auth, groupId, name, buffer, mime) {
+function saveKnowledgeDoc(company, auth, groupId, name, buffer, mime, meta = {}) {
   if (buffer.length > KNOWLEDGE_MAX_BYTES) throw bad('文件超过 10MB 限制');
   const ext = path.extname(name).toLowerCase();
   const id = randomId('doc');
@@ -664,6 +794,8 @@ function saveKnowledgeDoc(company, auth, groupId, name, buffer, mime) {
     throw bad('没有从文件中提取到文本');
   }
   fs.writeFileSync(textPath, String(text).slice(0, 1_000_000), 'utf8');
+  const effectiveAt = Number(meta.effectiveAt) > 0 ? Number(meta.effectiveAt) : now();
+  const authority = ['official', 'department', 'personal'].includes(meta.authority) ? meta.authority : 'normal';
   const doc = {
     id,
     companyId: company.id,
@@ -673,12 +805,16 @@ function saveKnowledgeDoc(company, auth, groupId, name, buffer, mime) {
     size: buffer.length,
     createdBy: auth.employee.id,
     createdAt: now(),
+    version: String(meta.version || '').trim().slice(0, 40),
+    effectiveAt,
+    authority,
     rawPath,
     textPath,
     chunks: knowledgeChunks(text).length,
   };
   db.data.knowledgeDocs.push(doc);
   KNOWLEDGE_TEXT_CACHE.delete(doc.id);
+  knowledgeExtractGraph(company.id, doc, text);
   return doc;
 }
 
@@ -690,6 +826,9 @@ function knowledgeDocView(doc) {
     mime: doc.mime,
     size: doc.size,
     chunks: doc.chunks,
+    version: doc.version || '',
+    effectiveAt: doc.effectiveAt || null,
+    authority: doc.authority || 'normal',
     createdAt: doc.createdAt,
     createdByName: memberName(doc.createdBy),
   };
@@ -2014,7 +2153,11 @@ route('POST', /^\/api\/knowledge$/, async (req) => {
   if (!raw) throw bad('缺少文件内容');
   const buffer = Buffer.from(raw, 'base64');
   if (!buffer.length) throw bad('文件为空');
-  const doc = saveKnowledgeDoc(auth.company, auth, groupId, name, buffer, body.mime);
+  const doc = saveKnowledgeDoc(auth.company, auth, groupId, name, buffer, body.mime, {
+    version: body.version,
+    effectiveAt: body.effectiveAt,
+    authority: body.authority,
+  });
   await db.save();
   return { doc: knowledgeDocView(doc) };
 });
@@ -2025,6 +2168,7 @@ route('DELETE', /^\/api\/knowledge\/([a-z0-9_]+)$/, async (req) => {
   const doc = db.data.knowledgeDocs.find((entry) => entry.id === match[1] && entry.companyId === auth.company.id);
   if (!doc) throw notFound('知识文档不存在');
   db.data.knowledgeDocs = db.data.knowledgeDocs.filter((entry) => entry.id !== doc.id);
+  db.data.knowledgeRelations = (db.data.knowledgeRelations ?? []).filter((relation) => relation.docId !== doc.id);
   KNOWLEDGE_TEXT_CACHE.delete(doc.id);
   for (const file of [doc.rawPath, doc.textPath]) {
     try {
@@ -2035,6 +2179,51 @@ route('DELETE', /^\/api\/knowledge\/([a-z0-9_]+)$/, async (req) => {
   }
   await db.save();
   return { removed: true };
+});
+
+route('GET', /^\/api\/knowledge\/entities$/, async (req) => {
+  const auth = authenticate(req);
+  const items = (db.data.knowledgeEntities ?? [])
+    .filter((entity) => entity.companyId === auth.company.id)
+    .map((entity) => ({
+      id: entity.id,
+      name: entity.name,
+      aliases: entity.aliases ?? [],
+      type: entity.type,
+      relations: (db.data.knowledgeRelations ?? [])
+        .filter((relation) => relation.companyId === auth.company.id && (relation.subjectId === entity.id || relation.objectId === entity.id))
+        .slice(0, 20)
+        .map((relation) => {
+          const subject = db.data.knowledgeEntities.find((entry) => entry.id === relation.subjectId);
+          const object = db.data.knowledgeEntities.find((entry) => entry.id === relation.objectId);
+          return subject && object ? { subject: subject.name, predicate: relation.predicate, object: object.name } : null;
+        })
+        .filter(Boolean),
+    }));
+  return { items };
+});
+
+route('POST', /^\/api\/knowledge\/entities\/alias$/, async (req) => {
+  const auth = authenticate(req);
+  const body = await readJsonBody(req);
+  const alias = str(body.alias, '别名', { max: 40 });
+  const canonical = str(body.canonical, '实体名', { max: 40 });
+  if (alias === canonical) throw bad('别名和实体名不能相同');
+  const entity = knowledgeUpsertEntity(auth.company.id, canonical);
+  const other = knowledgeFindEntity(auth.company.id, alias);
+  if (other && other.id !== entity.id) {
+    for (const name of [other.name, ...(other.aliases ?? [])]) {
+      if (name !== entity.name && !entity.aliases.includes(name)) entity.aliases.push(name);
+    }
+    for (const relation of db.data.knowledgeRelations ?? []) {
+      if (relation.subjectId === other.id) relation.subjectId = entity.id;
+      if (relation.objectId === other.id) relation.objectId = entity.id;
+    }
+    db.data.knowledgeEntities = db.data.knowledgeEntities.filter((entry) => entry.id !== other.id);
+  }
+  if (!entity.aliases.includes(alias)) entity.aliases.push(alias);
+  await db.save();
+  return { entity: { id: entity.id, name: entity.name, aliases: entity.aliases } };
 });
 
 route('POST', /^\/api\/knowledge\/search$/, async (req) => {
