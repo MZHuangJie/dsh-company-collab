@@ -817,6 +817,10 @@ class CompanyHub {
     return this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/ai/cancel`, {});
   }
 
+  async openDirect(employeeId) {
+    return this.fetchJson('POST', '/api/directs', { employeeId });
+  }
+
   async markRead(groupId, seq) {
     await this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/read`, { seq: Number(seq) || 0 });
     if (this.remote) {
@@ -1051,6 +1055,8 @@ function handleApi(req, res) {
       }
       case 'POST ai/cancel':
         return hub.cancelAi(body.groupId).then((result) => ({ ok: true, ...result }));
+      case 'POST directs':
+        return hub.openDirect(body.employeeId).then((result) => ({ ok: true, ...result }));
       case 'GET attachment':
         await hub.attachmentResponse(url.searchParams.get('groupId') ?? '', url.searchParams.get('id') ?? '', res);
         return {};
