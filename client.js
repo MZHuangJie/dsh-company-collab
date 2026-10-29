@@ -611,6 +611,7 @@ window.__ModuleLoader__.load({
 .dcc-memberRow:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dcc-memberMain{flex:1;min-width:0}
 .dcc-memberName{font-size:12px;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcc-errorText{white-space:pre-wrap;word-break:break-word;font-size:11px;line-height:1.5;color:var(--dsw-alias-state-error-primary);margin:0;padding:12px;border:.5px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);overflow:auto}
 .dcc-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;height:100%;padding:32px 24px;text-align:center;color:var(--dsw-alias-label-tertiary)}
 .dcc-emptyIcon{width:44px;height:44px;border-radius:13px;display:flex;align-items:center;justify-content:center;background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary)}
 .dcc-emptyTitle{font-size:13px;color:var(--dsw-alias-label-secondary);font-weight:500}
@@ -3279,6 +3280,39 @@ window.__ModuleLoader__.load({
 
     // ---------------------------------------------------------------- plugin
 
+    class PluginErrorBoundary extends React.Component {
+      constructor(props) {
+        super(props);
+        this.state = { error: null };
+      }
+      static getDerivedStateFromError(error) {
+        return { error };
+      }
+      componentDidCatch(error, info) {
+        console.error('[company-collab] render failed', error, info);
+      }
+      render() {
+        if (this.state.error) {
+          return h(
+            'div',
+            { className: 'dcc-page' },
+            h('div', { className: 'dcc-empty' }, '企业协作界面渲染失败'),
+            h('pre', { className: 'dcc-errorText' }, String(this.state.error?.stack || this.state.error)),
+          );
+        }
+        return this.props.children;
+      }
+    }
+
+    function guard(Component) {
+      return function Guarded(props) {
+        return h(PluginErrorBoundary, null, h(Component, props));
+      };
+    }
+
+    const SafeHubPage = guard(HubPage);
+    const SafeCollabTab = guard(CollabTab);
+
     function CompanyGlyph({ size = 18 }) {
       return h(Icon, { name: 'company', size });
     }
@@ -3317,10 +3351,9 @@ window.__ModuleLoader__.load({
               key: PANEL_ID,
               locale: NS,
             },
-            HubPage,
+            SafeHubPage,
           ),
-        'company-collab: main panel',
-      );
+        'company-collab: main panel',      );
 
       ctx.effect(
         () =>
@@ -3368,7 +3401,7 @@ window.__ModuleLoader__.load({
                   key: TAB_ID,
                   locale: NS,
                 },
-                CollabTab,
+                SafeCollabTab,
               ),
             ),
           'company-collab: right tab body',
