@@ -57,35 +57,29 @@ location /git/ {
 
 ## 服务器 DSH 主机（完整 DSH 能力）
 
-默认 `@AI` 走服务端聊天 API。要让群聊拥有完整 DSH 工具能力，在服务器安装 DSH CLI 并配置 host profile：
+要让群聊像 DSH 会话一样持续执行、显示思考与工具调用，在服务器安装 DSH CLI，并使用 ACP 持久会话模式：
 
 ```bash
 npm install @deepseek-ai/dsh@0.2.1-rc.4
-# 以运行 Hub 的用户初始化 headless profile
-DSH_HOME=/var/lib/dsh-host/home dsh --profile headless "只回复：OK"
-```
-
-把 `server/host-approval` 安装到 host profile 的 `node_modules/company-host-approval`，并在 profile 的 `cordis.patch.yml` 加：
-
-```yaml
-- insert:
-    - id: company-host-approval
-      name: company-host-approval
+# 以运行 Hub 的用户初始化 ACP profile
+DSH_HOME=/var/lib/dsh-host/home dsh --profile acp
 ```
 
 Hub 环境变量：
 
 ```bash
 DSH_HOST_ENABLED=1
-COMPANY_HOST_TOKEN=<随机长 token>
-COMPANY_HOST_URL=http://127.0.0.1:8477
+DSH_HOST_MODE=acp
 DSH_HOST_BIN=/opt/dsh-host/node_modules/@deepseek-ai/dsh/lib/bin.js
 DSH_HOST_HOME=/var/lib/dsh-host/home
 DSH_HOST_WORKSPACE_ROOT=/var/lib/dsh-host/workspaces
 DSH_HOST_PERMISSION_MODE=workspace-write
+DEEPSEEK_API_KEY=sk-...
 ```
 
-群里的危险操作会发审批消息，管理员或提出者回复：
+- 每个群一个持久 ACP 会话，跨消息保留上下文；
+- 群里显示 `💭 正在思考`、`🔧 工具调用`、`✅ 工具结果` 和最终回复；
+- 危险操作由 ACP 权限请求转成群审批：
 
 ```text
 允许 <审批编号>
@@ -93,6 +87,8 @@ DSH_HOST_PERMISSION_MODE=workspace-write
 ```
 
 120 秒未处理自动拒绝。
+
+> 旧的一次性 headless 模式仍保留（`DSH_HOST_MODE=headless` + `server/host-approval` 插件），ACP 模式不需要该插件。
 
 ## 第一次使用
 

@@ -33,6 +33,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import readline from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
 
 const VERSION = '1.0.0';
@@ -389,8 +390,12 @@ function scheduleChatReply(company, group, trigger) {
     return;
   }
   const previous = CHAT_QUEUES.get(group.id) ?? Promise.resolve();
+  const useAcp = process.env.DSH_HOST_MODE === 'acp';
   const next = previous
-    .then(() => (dshHostEnabled() ? replyWithDshHost(company, group, trigger) : replyInChat(company, group, trigger, config)))
+    .then(() => {
+      if (useAcp) return acpHostFor(company, group).prompt(trigger.text, trigger);
+      return dshHostEnabled() ? replyWithDshHost(company, group, trigger) : replyInChat(company, group, trigger, config);
+    })
     .catch((error) => {
       console.error('[company-hub] 群聊 AI 回复失败', error);
       postSystemMessage(company, group, `AI 回复失败：${String(error.message || error).slice(0, 200)}`);
@@ -557,6 +562,280 @@ function expirePendingApprovals() {
     changed = true;
   }
   if (changed) db.save().catch((error) => console.error('[company-hub] 审批超时保存失败', error));
+}
+
+function createApprovalRecord(company, group, requester, toolName, reason, callId) {
+  const approval = {
+    id: randomId('apr'),
+    companyId: company.id,
+    groupId: group.id,
+    requestedBy: requester.id,
+    toolName: String(toolName || '工具调用').slice(0, 120),
+    reason: String(reason || '').slice(0, 500),
+    callId: String(callId || '').slice(0, 120),
+    status: 'pending',
+    createdAt: now(),
+    expiresAt: now() + 120_000,
+  };
+  db.data.approvals.push(approval);
+  announceApproval(company, group, approval);
+  return approval;
+}
+
+function waitApprovalDecision(approval) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      expireApproval(approval);
+      if (approval.status !== 'pending' || Date.now() - started > 125_000) {
+        clearInterval(timer);
+        resolve(approval.status === 'approved' ? 'allowed-once' : 'rejected');
+      }
+    }, 500);
+  });
+}
+
+function clip(value, max = 500) {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+class AcpConnection {
+  constructor(child, handlers) {
+    this.child = child;
+    this.handlers = handlers;
+    this.pending = new Map();
+    this.nextId = 1;
+    this.closed = false;
+    const lines = readline.createInterface({ input: child.stdout });
+    lines.on('line', (line) => this.onLine(line));
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString();
+      if (text.trim()) console.log('[company-hub] ACP:', text.trim().slice(0, 500));
+    });
+    child.on('exit', (code, signal) => {
+      this.closed = true;
+      for (const pending of this.pending.values()) pending.reject(new Error(`ACP 退出 ${code ?? signal}`));
+      this.pending.clear();
+      this.handlers.onExit?.(code, signal);
+    });
+  }
+
+  send(message) {
+    if (this.closed) throw new Error('ACP 连接已关闭');
+    this.child.stdin.write(`${JSON.stringify(message)}\n`);
+  }
+
+  request(method, params, timeoutMs = 30_000) {
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = timeoutMs
+        ? setTimeout(() => {
+            this.pending.delete(id);
+            reject(new Error(`ACP ${method} 超时`));
+          }, timeoutMs)
+        : null;
+      this.pending.set(id, {
+        resolve: (value) => {
+          if (timer) clearTimeout(timer);
+          resolve(value);
+        },
+        reject: (error) => {
+          if (timer) clearTimeout(timer);
+          reject(error);
+        },
+      });
+      this.send({ jsonrpc: '2.0', id, method, params });
+    });
+  }
+
+  async onLine(line) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if (message.method && message.id !== undefined) {
+      try {
+        const result = await this.handlers.onRequest(message.method, message.params);
+        this.send({ jsonrpc: '2.0', id: message.id, result: result ?? {} });
+      } catch (error) {
+        this.send({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: String(error.message || error) } });
+      }
+      return;
+    }
+    if (message.method) {
+      if (message.method === 'session/update') this.handlers.onUpdate(message.params);
+      return;
+    }
+    const pending = this.pending.get(message.id);
+    if (!pending) return;
+    this.pending.delete(message.id);
+    if (message.error) pending.reject(new Error(message.error.message || 'ACP 错误'));
+    else pending.resolve(message.result);
+  }
+}
+
+const ACP_HOSTS = new Map();
+
+class AcpHost {
+  constructor(company, group) {
+    this.company = company;
+    this.group = group;
+    this.connection = null;
+    this.sessionId = null;
+    this.queue = Promise.resolve();
+    this.runState = null;
+  }
+
+  async ensure() {
+    if (this.connection && !this.connection.closed && this.sessionId) return this.connection;
+    const workspace = dshHostWorkspace(this.company, this.group);
+    const cli = process.env.DSH_HOST_BIN || '/opt/dsh-host/node_modules/@deepseek-ai/dsh/lib/bin.js';
+    const home = process.env.DSH_HOST_HOME || '/var/lib/dsh-host/home';
+    if (!fs.existsSync(cli)) throw new Error(`DSH host CLI 不存在：${cli}`);
+    const child = spawn(process.execPath, [cli, '--profile', 'acp'], {
+      cwd: workspace,
+      env: {
+        ...process.env,
+        DSH_HOME: home,
+        DSH_PERMISSION_MODE: process.env.DSH_HOST_PERMISSION_MODE || 'workspace-write',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    this.connection = new AcpConnection(child, {
+      onUpdate: (params) => this.onUpdate(params),
+      onRequest: (method, params) => this.onRequest(method, params),
+      onExit: () => {
+        this.connection = null;
+        this.sessionId = null;
+      },
+    });
+    await this.connection.request('initialize', {
+      protocolVersion: 1,
+      clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
+    });
+    const session = await this.connection.request('session/new', { cwd: workspace, mcpServers: [] });
+    this.sessionId = session.sessionId;
+    return this.connection;
+  }
+
+  prompt(text, trigger) {
+    this.queue = this.queue
+      .then(() => this.run(text, trigger))
+      .catch((error) => {
+        console.error('[company-hub] ACP prompt 失败', error);
+        postSystemMessage(this.company, this.group, `AI 执行失败：${clip(String(error.message || error), 300)}`);
+      });
+    return this.queue;
+  }
+
+  async run(text, trigger) {
+    const connection = await this.ensure();
+    this.runState = { thought: '', answer: '', triggeredBy: trigger, tools: new Map() };
+    const members = db
+      .companyEmployees(this.company.id)
+      .filter((entry) => !entry.isAi)
+      .map((entry) => entry.name)
+      .join('、');
+    const prompt = [
+      `（群聊：公司「${this.company.name}」/ 群「${this.group.name}」；成员：${members || '成员'}；发送者：${db.employee(trigger.authorId)?.name ?? '成员'}）`,
+      '你是这个群的 AI 助理，运行在服务器 DSH 主机，拥有完整工具。直接回答；需要改文件/命令就执行，敏感操作会请求群审批。',
+      '',
+      text,
+    ].join('\n');
+    await connection.request('session/prompt', {
+      sessionId: this.sessionId,
+      prompt: [{ type: 'text', text: prompt }],
+    }, 0);
+    const state = this.runState;
+    this.runState = null;
+    if (!state || !db.group(this.group.id)) return;
+    const answer = state.answer.trim() || '（AI 没有返回文本内容）';
+    db.data.messages.push({
+      id: randomId('msg'),
+      companyId: this.company.id,
+      groupId: this.group.id,
+      seq: ++this.group.seq,
+      text: answer,
+      authorId: db.aiMember(this.company.id)?.id ?? trigger.authorId,
+      kind: 'text',
+      createdAt: now(),
+    });
+    await db.save();
+  }
+
+  onUpdate(params) {
+    const update = params?.update;
+    const state = this.runState;
+    if (!update || !state) return;
+    if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+      state.answer += update.content.text;
+      return;
+    }
+    if (update.sessionUpdate === 'agent_thought_chunk' && update.content?.type === 'text') {
+      if (!state.thought) postSystemMessage(this.company, this.group, '💭 AI 正在思考…');
+      state.thought += update.content.text;
+      if (state.thought.length > 20_000) state.thought = state.thought.slice(-20_000);
+      return;
+    }
+    if (update.sessionUpdate === 'tool_call') {
+      const args = update.rawInput === undefined ? '' : `\n${clip(update.rawInput, 300)}`;
+      const title = update.title || update.name || '工具调用';
+      state.tools.set(update.toolCallId, { title, rawInput: update.rawInput });
+      postSystemMessage(this.company, this.group, `🔧 ${clip(title, 200)}${args}`);
+      return;
+    }
+    if (update.sessionUpdate === 'tool_call_update' && (update.status === 'completed' || update.status === 'failed')) {
+      const resultText = Array.isArray(update.content)
+        ? update.content.map((item) => (item.type === 'content' && item.content?.type === 'text' ? item.content.text : '')).filter(Boolean).join('\n')
+        : '';
+      const title = update.title || state.tools.get(update.toolCallId)?.title || update.toolCallId || '工具调用';
+      postSystemMessage(
+        this.company,
+        this.group,
+        `${update.status === 'completed' ? '✅' : '⚠️'} ${clip(title, 200)}${resultText ? `\n${clip(resultText, 400)}` : ''}`,
+      );
+      return;
+    }
+    if (update.sessionUpdate === 'plan' && Array.isArray(update.entries)) {
+      const lines = update.entries.map((entry) => `- [${entry.status}] ${entry.content}`).join('\n');
+      if (lines) postSystemMessage(this.company, this.group, `📋 计划：\n${lines}`);
+    }
+  }
+
+  async onRequest(method, params) {
+    if (method !== 'session/request_permission') throw new Error(`不支持的 ACP 请求：${method}`);
+    const state = this.runState;
+    if (!state) return { outcome: { outcome: 'cancelled' } };
+    const tool = params?.toolCall ?? {};
+    const known = state.tools.get(tool.toolCallId) ?? {};
+    const title = tool.title || tool.name || known.title || tool.rawInput?.description || '工具调用';
+    const reasonSource = tool.rawInput ?? known.rawInput;
+    const reason = reasonSource === undefined ? '' : clip(reasonSource, 500);
+    const approval = createApprovalRecord(this.company, this.group, state.triggeredBy, title, reason, tool.toolCallId);
+    const outcome = await waitApprovalDecision(approval);
+    await db.save().catch(() => {});
+    const options = Array.isArray(params?.options) ? params.options : [];
+    if (outcome !== 'allowed-once') {
+      const reject = options.find((option) => option.kind === 'reject_once' || option.kind === 'reject_always') ?? options.at(-1);
+      if (reject) return { outcome: { outcome: 'selected', optionId: reject.optionId } };
+      return { outcome: { outcome: 'cancelled' } };
+    }
+    const allow = options.find((option) => option.kind === 'allow_once' || option.kind === 'allow_always') ?? options[0];
+    if (!allow) return { outcome: { outcome: 'cancelled' } };
+    return { outcome: { outcome: 'selected', optionId: allow.optionId } };
+  }
+}
+
+function acpHostFor(company, group) {
+  let host = ACP_HOSTS.get(group.id);
+  if (!host) {
+    host = new AcpHost(company, group);
+    ACP_HOSTS.set(group.id, host);
+  }
+  return host;
 }
 
 function expireOfflineJobs() {
