@@ -266,6 +266,7 @@ function messageView(message) {
     taskId: message.taskId ?? null,
     runId: message.runId ?? null,
     approvalId: message.approvalId ?? null,
+    activity: message.activity ?? null,
     createdAt: message.createdAt,
   };
 }
@@ -419,6 +420,7 @@ function postSystemMessage(company, group, text, options = {}) {
     authorId: db.aiMember(company.id)?.id ?? company.id,
     kind: options.kind || 'system',
     runId: options.runId,
+    activity: options.activity,
     createdAt: now(),
   });
   db.save().catch((error) => console.error('[company-hub] 系统消息保存失败', error));
@@ -779,16 +781,31 @@ class AcpHost {
       return;
     }
     if (update.sessionUpdate === 'agent_thought_chunk' && update.content?.type === 'text') {
-      if (!state.thought) postSystemMessage(this.company, this.group, '💭 AI 正在思考…', { kind: 'activity', runId: state.runId });
+      if (!state.thought) {
+        postSystemMessage(this.company, this.group, '', {
+          kind: 'activity',
+          runId: state.runId,
+          activity: { type: 'thought', title: '思考', detail: clip(update.content.text, 300), status: 'running' },
+        });
+      }
       state.thought += update.content.text;
       if (state.thought.length > 20_000) state.thought = state.thought.slice(-20_000);
       return;
     }
     if (update.sessionUpdate === 'tool_call') {
-      const args = update.rawInput === undefined ? '' : `\n${clip(update.rawInput, 300)}`;
       const title = update.title || update.name || '工具调用';
       state.tools.set(update.toolCallId, { title, rawInput: update.rawInput });
-      postSystemMessage(this.company, this.group, `🔧 ${clip(title, 200)}${args}`, { kind: 'activity', runId: state.runId });
+      postSystemMessage(this.company, this.group, '', {
+        kind: 'activity',
+        runId: state.runId,
+        activity: {
+          type: 'tool',
+          title: clip(title, 200),
+          detail: update.rawInput === undefined ? '' : clip(update.rawInput, 400),
+          status: 'running',
+          toolCallId: update.toolCallId,
+        },
+      });
       return;
     }
     if (update.sessionUpdate === 'tool_call_update' && (update.status === 'completed' || update.status === 'failed')) {
@@ -796,17 +813,28 @@ class AcpHost {
         ? update.content.map((item) => (item.type === 'content' && item.content?.type === 'text' ? item.content.text : '')).filter(Boolean).join('\n')
         : '';
       const title = update.title || state.tools.get(update.toolCallId)?.title || update.toolCallId || '工具调用';
-      postSystemMessage(
-        this.company,
-        this.group,
-        `${update.status === 'completed' ? '✅' : '⚠️'} ${clip(title, 200)}${resultText ? `\n${clip(resultText, 400)}` : ''}`,
-        { kind: 'activity', runId: state.runId },
-      );
+      postSystemMessage(this.company, this.group, '', {
+        kind: 'activity',
+        runId: state.runId,
+        activity: {
+          type: 'tool',
+          title: clip(title, 200),
+          detail: clip(resultText, 600),
+          status: update.status === 'completed' ? 'completed' : 'failed',
+          toolCallId: update.toolCallId,
+        },
+      });
       return;
     }
     if (update.sessionUpdate === 'plan' && Array.isArray(update.entries)) {
       const lines = update.entries.map((entry) => `- [${entry.status}] ${entry.content}`).join('\n');
-      if (lines) postSystemMessage(this.company, this.group, `📋 计划：\n${lines}`, { kind: 'activity', runId: state.runId });
+      if (lines) {
+        postSystemMessage(this.company, this.group, '', {
+          kind: 'activity',
+          runId: state.runId,
+          activity: { type: 'plan', title: '计划', detail: clip(lines, 800), status: 'done' },
+        });
+      }
     }
   }
 

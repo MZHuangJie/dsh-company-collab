@@ -103,6 +103,7 @@ window.__ModuleLoader__.load({
       'run.running': '正在处理',
       'run.finished': '已完成，过程已折叠',
       'run.steps': '步',
+      'run.failed': '失败',
       'task.title': 'AI 任务',
       'task.empty': '暂无待处理的 AI 任务',
       'task.by': '{name} 指派',
@@ -286,6 +287,7 @@ window.__ModuleLoader__.load({
       'run.running': 'Working',
       'run.finished': 'Done — process collapsed',
       'run.steps': 'steps',
+      'run.failed': 'Failed',
       'task.title': 'AI tasks',
       'task.empty': 'No pending AI tasks',
       'task.by': 'assigned by {name}',
@@ -455,6 +457,20 @@ window.__ModuleLoader__.load({
 .dcc-runBody{display:flex;flex-direction:column;gap:4px;padding:2px 9px 8px;border-top:.5px solid var(--dsw-alias-border-l1)}
 .dcc-runItem{font-size:11px;line-height:1.55;color:var(--dsw-alias-label-secondary);white-space:pre-wrap;word-break:break-word}
 .dcc-runItem[data-strong]{color:var(--dsw-alias-label-primary)}
+.dcc-step{display:flex;gap:8px;padding:7px 0;border-top:.5px solid color-mix(in srgb,var(--dsw-alias-border-l1) 65%,transparent)}
+.dcc-step:first-child{border-top:0}
+.dcc-stepIcon{flex:none;width:20px;height:20px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-layer-2)}
+.dcc-step[data-type="thought"] .dcc-stepIcon{color:var(--dsw-alias-brand-primary)}
+.dcc-step[data-type="tool"] .dcc-stepIcon{color:var(--dsw-alias-label-secondary)}
+.dcc-step[data-status="completed"] .dcc-stepIcon{color:var(--dsw-alias-state-success-primary)}
+.dcc-step[data-status="failed"] .dcc-stepIcon{color:var(--dsw-alias-state-warn-primary)}
+.dcc-stepBody{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.dcc-stepHead{display:flex;align-items:baseline;gap:7px;min-width:0}
+.dcc-stepTitle{font-size:11px;font-weight:600;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcc-stepStatus{flex:none;font-size:9px;color:var(--dsw-alias-label-tertiary)}
+.dcc-stepStatus[data-failed]{color:var(--dsw-alias-state-warn-primary)}
+.dcc-stepDetail,.dcc-stepResult{font-size:10.5px;line-height:1.5;white-space:pre-wrap;word-break:break-word;color:var(--dsw-alias-label-secondary);font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace);max-height:150px;overflow:auto}
+.dcc-stepResult{padding-top:3px;border-top:.5px dashed var(--dsw-alias-border-l1);color:var(--dsw-alias-label-tertiary)}
 .dcc-taskChip{display:inline-flex;align-items:center;gap:4px;align-self:flex-start;margin-top:2px;font-size:10px;color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 10%,transparent);border:.5px solid color-mix(in srgb,var(--dsw-alias-brand-primary) 26%,transparent);border-radius:999px;padding:1px 6px}
 .dcc-taskStrip{flex:none;display:flex;align-items:center;gap:8px;padding:7px 16px;border-top:.5px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 5%,var(--dsw-alias-bg-base));overflow-x:auto}
 .dcc-taskStripLabel{font-size:11px;color:var(--dsw-alias-brand-primary);font-weight:600;flex:none}
@@ -1933,12 +1949,38 @@ window.__ModuleLoader__.load({
       );
     }
 
+    const RUN_ICONS = { thought: 'sparkle', tool: 'gear', plan: 'folder', status: 'check' };
+
+    function buildRunSteps(messages) {
+      const steps = [];
+      const tools = new Map();
+      for (const message of messages) {
+        const activity = message.activity;
+        if (!activity) {
+          if (message.text) steps.push({ id: message.id, type: 'status', title: '过程', detail: message.text, status: 'done' });
+          continue;
+        }
+        if (activity.type === 'tool' && activity.toolCallId && tools.has(activity.toolCallId)) {
+          const step = tools.get(activity.toolCallId);
+          if (activity.title) step.title = activity.title;
+          if (activity.detail) step.result = activity.detail;
+          if (activity.status) step.status = activity.status;
+          continue;
+        }
+        const step = { ...activity, id: message.id };
+        steps.push(step);
+        if (activity.type === 'tool' && activity.toolCallId) tools.set(activity.toolCallId, step);
+      }
+      return steps;
+    }
+
     function RunActivity({ t, messages, finished }) {
       const [open, setOpen] = React.useState(!finished);
       React.useEffect(() => {
         if (finished) setOpen(false);
       }, [finished]);
-      const count = messages.length;
+      const steps = buildRunSteps(messages);
+      const count = steps.length;
       return h(
         'div',
         { className: 'dcc-run' },
@@ -1964,11 +2006,40 @@ window.__ModuleLoader__.load({
           ? h(
               'div',
               { className: 'dcc-runBody' },
-              messages.map((message) =>
+              steps.map((step) =>
                 h(
                   'div',
-                  { key: message.id, className: 'dcc-runItem', 'data-strong': /^(✅|⚠️)/.test(message.text) ? '' : undefined },
-                  message.text,
+                  {
+                    key: step.id,
+                    className: 'dcc-step',
+                    'data-type': step.type || 'status',
+                    'data-status': step.status || 'done',
+                  },
+                  h(
+                    'span',
+                    { className: 'dcc-stepIcon' },
+                    h(Icon, { name: RUN_ICONS[step.type] || 'sparkle', size: 13 }),
+                  ),
+                  h(
+                    'div',
+                    { className: 'dcc-stepBody' },
+                    h(
+                      'div',
+                      { className: 'dcc-stepHead' },
+                      h('span', { className: 'dcc-stepTitle' }, step.title || '过程'),
+                      step.status === 'running'
+                        ? h('span', { className: 'dcc-stepStatus' }, t('run.running'))
+                        : step.status === 'failed'
+                          ? h('span', { className: 'dcc-stepStatus', 'data-failed': '' }, t('run.failed'))
+                          : null,
+                    ),
+                    step.detail
+                      ? h('div', { className: 'dcc-stepDetail' }, step.detail)
+                      : null,
+                    step.result
+                      ? h('div', { className: 'dcc-stepResult' }, step.result)
+                      : null,
+                  ),
                 ),
               ),
             )
