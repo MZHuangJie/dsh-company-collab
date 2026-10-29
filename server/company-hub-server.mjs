@@ -1476,10 +1476,33 @@ class AcpHost {
     });
     const session = await this.connection.request('session/new', { cwd: workspace, mcpServers: [] });
     this.sessionId = session.sessionId;
+    await this.applyModel(session.configOptions).catch((error) => {
+      console.log('[company-hub] ACP 设置模型失败', String(error.message || error));
+    });
     await this.applyReasoning(session.configOptions).catch((error) => {
       console.log('[company-hub] ACP 设置 reasoning_effort 失败', String(error.message || error));
     });
     return this.connection;
+  }
+
+  async applyModel(configs) {
+    const option = (Array.isArray(configs) ? configs : []).find(
+      (entry) => entry?.type === 'select' && /model/i.test(`${entry.id} ${entry.category} ${entry.name}`),
+    );
+    if (!option) return;
+    const values = Array.isArray(option.options)
+      ? option.options.flatMap((item) => (Array.isArray(item?.options) ? item.options : [item]))
+      : [];
+    const preferred =
+      values.find((item) => /deepseek-v4[.-]?flash/i.test(`${item?.name ?? ''} ${item?.value ?? ''}`)) ??
+      values.find((item) => /(^|[^a-z])flash([^a-z]|$)/i.test(`${item?.name ?? ''} ${item?.value ?? ''}`)) ??
+      values.find((item) => /v4[.-]?1/i.test(`${item?.name ?? ''} ${item?.value ?? ''}`));
+    if (!preferred || preferred.value === option.currentValue) return;
+    await this.connection.request('session/set_config_option', {
+      sessionId: this.sessionId,
+      configId: option.id,
+      value: preferred.value,
+    });
   }
 
   async applyReasoning(configs) {
@@ -1491,6 +1514,7 @@ class AcpHost {
       ? option.options.flatMap((item) => (Array.isArray(item?.options) ? item.options : [item]))
       : [];
     const preferred =
+      values.find((item) => /^max$/i.test(String(item?.value))) ??
       values.find((item) => /^(high|max)$/i.test(String(item?.value))) ??
       values.find((item) => /medium/i.test(String(item?.value)));
     if (!preferred || preferred.value === option.currentValue) return;
