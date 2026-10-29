@@ -731,12 +731,12 @@ function sendJson(res, status, value) {
   res.end(body);
 }
 
-async function readBody(req) {
+async function readBody(req, maxBytes = 2 * 1024 * 1024) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > 2 * 1024 * 1024) throw new HubError('请求体过大');
+    if (size > maxBytes) throw new HubError('请求体过大');
     chunks.push(chunk);
   }
   if (!size) return {};
@@ -752,7 +752,7 @@ function handleApi(req, res) {
   const action = url.pathname.slice(ROUTE_PREFIX.length).replace(/^\/+/, '');
   const method = req.method ?? 'GET';
   const run = async () => {
-    const body = method === 'POST' ? await readBody(req) : {};
+    const body = method === 'POST' ? await readBody(req, action === 'knowledge' ? 20 * 1024 * 1024 : 2 * 1024 * 1024) : {};
     if (!hub) throw new HubError('插件尚未就绪');
     const eventsMatch = method === 'GET' ? /^groups\/([a-z0-9_]+)\/events$/.exec(action) : null;
     if (eventsMatch) {

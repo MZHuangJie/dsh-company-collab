@@ -37,7 +37,7 @@ import readline from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
 
 const VERSION = '1.0.0';
-const MAX_BODY_BYTES = 16 * 1024 * 1024;
+const MAX_BODY_BYTES = 24 * 1024 * 1024;
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_TEXT = 4000;
 
