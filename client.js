@@ -642,6 +642,8 @@ window.__ModuleLoader__.load({
 .dcc-step[data-status="failed"] .dcc-stepIcon{color:var(--dsw-alias-state-warn-primary)}
 .dcc-stepBody{flex:1;min-width:0;display:flex;flex-direction:column;gap:6px}
 .dcc-stepHead{display:flex;align-items:baseline;gap:7px;min-width:0}
+.dcc-stepHead[role=button]{cursor:pointer}
+.dcc-stepChevron{flex:none;font-size:9px;color:var(--dsw-alias-label-tertiary);width:9px}
 .dcc-stepTitle{font-size:12px;font-weight:500;color:var(--dsw-alias-label-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcc-stepStatus{flex:none;font-size:10px;color:var(--dsw-alias-label-tertiary)}
 .dcc-stepStatus[data-failed]{color:var(--dsw-alias-state-warn-primary)}
@@ -2579,11 +2581,67 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function RunActivity({ t, messages, finished, finishedAt }) {
+    function RunStep({ t, step }) {
       const [open, setOpen] = React.useState(false);
-      React.useEffect(() => {
-        if (finished) setOpen(false);
-      }, [finished]);
+      const isTool = step.type === 'tool';
+      const canFold = isTool && Boolean(step.detail || step.result);
+      const toggle = () => {
+        if (canFold) setOpen((value) => !value);
+      };
+      return h(
+        'div',
+        {
+          className: 'dcc-step',
+          'data-type': step.type || 'status',
+          'data-status': step.status || 'done',
+        },
+        h(
+          'span',
+          { className: 'dcc-stepIcon' },
+          h(Icon, { name: RUN_ICONS[step.type] || 'sparkle', size: 13 }),
+        ),
+        h(
+          'div',
+          { className: 'dcc-stepBody' },
+          h(
+            'div',
+            {
+              className: 'dcc-stepHead',
+              role: canFold ? 'button' : undefined,
+              tabIndex: canFold ? 0 : undefined,
+              'aria-expanded': canFold ? (open ? 'true' : 'false') : undefined,
+              onClick: canFold ? toggle : undefined,
+              onKeyDown: canFold
+                ? (event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      toggle();
+                    }
+                  }
+                : undefined,
+            },
+            canFold ? h('span', { className: 'dcc-stepChevron' }, open ? '▾' : '▸') : null,
+            h('span', { className: 'dcc-stepTitle' }, isTool ? toolTitle(t, step) : step.title || '过程'),
+            step.status === 'running'
+              ? h('span', { className: 'dcc-stepStatus' }, t('run.running'))
+              : step.status === 'failed'
+                ? h('span', { className: 'dcc-stepStatus', 'data-failed': '' }, t('run.failed'))
+                : null,
+          ),
+          isTool && !open
+            ? null
+            : h(
+                React.Fragment,
+                null,
+                step.detail ? h('div', { className: 'dcc-stepDetail' }, step.detail) : null,
+                step.result ? h('div', { className: 'dcc-stepResult' }, step.result) : null,
+              ),
+        ),
+      );
+    }
+
+    function RunActivity({ t, messages, finished, finishedAt }) {
+      const [open, setOpen] = React.useState(true);
       const steps = buildRunSteps(messages);
       const count = steps.length;
       const startedAt = messages[0]?.createdAt;
@@ -2616,42 +2674,7 @@ window.__ModuleLoader__.load({
           ? h(
               'div',
               { className: 'dcc-runBody' },
-              steps.map((step) =>
-                h(
-                  'div',
-                  {
-                    key: step.id,
-                    className: 'dcc-step',
-                    'data-type': step.type || 'status',
-                    'data-status': step.status || 'done',
-                  },
-                  h(
-                    'span',
-                    { className: 'dcc-stepIcon' },
-                    h(Icon, { name: RUN_ICONS[step.type] || 'sparkle', size: 13 }),
-                  ),
-                  h(
-                    'div',
-                    { className: 'dcc-stepBody' },
-                    h(
-                      'div',
-                      { className: 'dcc-stepHead' },
-                      h('span', { className: 'dcc-stepTitle' }, step.type === 'tool' ? toolTitle(t, step) : step.title || '过程'),
-                      step.status === 'running'
-                        ? h('span', { className: 'dcc-stepStatus' }, t('run.running'))
-                        : step.status === 'failed'
-                          ? h('span', { className: 'dcc-stepStatus', 'data-failed': '' }, t('run.failed'))
-                          : null,
-                    ),
-                    step.detail
-                      ? h('div', { className: 'dcc-stepDetail' }, step.detail)
-                      : null,
-                    step.result
-                      ? h('div', { className: 'dcc-stepResult' }, step.result)
-                      : null,
-                  ),
-                ),
-              ),
+              steps.map((step) => h(RunStep, { key: step.id, t, step })),
             )
           : null,
       );
