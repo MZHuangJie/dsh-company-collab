@@ -531,6 +531,7 @@ class CompanyHub {
           if (String(remoteRefs.stdout || '').trim()) {
             throw new HubError('目标群仓库已经有内容，不能导入这个本地仓库；请选择空目录或新建仓库');
           }
+          const dirty = Boolean(String((await this.runGit(['status', '--porcelain'], target)).stdout || '').trim());
           const branchResult = await this.runGit(['rev-parse', '--abbrev-ref', 'HEAD'], target);
           const branch = String(branchResult.stdout || '').trim();
           if (!branch || branch === 'HEAD') throw new HubError('本地仓库处于 detached HEAD，请先切到具体分支');
@@ -551,12 +552,13 @@ class CompanyHub {
           this.state.groupRepos[group.id] = target;
           saveState(this.state);
           await this.configureRepoAuth(target);
-          return { path: target, action: 'imported', branch };
+          return { path: target, action: 'imported', branch, dirty };
         }
         this.state.groupRepos[group.id] = target;
         saveState(this.state);
         await this.configureRepoAuth(target);
-        return { path: target, action: 'bound' };
+        const dirty = Boolean(String((await this.runGit(['status', '--porcelain'], target)).stdout || '').trim());
+        return { path: target, action: 'bound', dirty };
       }
     }
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -572,6 +574,10 @@ class CompanyHub {
     if (!group) throw new HubError('群组不存在');
     const target = this.state.groupRepos[group.id];
     if (!target || !fs.existsSync(target)) throw new HubError('还没有绑定本地仓库');
+    const dirty = String((await this.runGit(['status', '--porcelain'], target)).stdout || '').trim();
+    if (dirty) {
+      throw new HubError('本地仓库有未提交修改，已停止同步；请先 commit 或 stash，避免覆盖/冲突。');
+    }
     await this.ensureGitToken();
     const result = await this.runGit(['pull', '--ff-only'], target);
     return { path: target, output: String(result.stdout || '').trim() };

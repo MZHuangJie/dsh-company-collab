@@ -161,6 +161,7 @@ window.__ModuleLoader__.load({
       'repo.buttonHint': '绑定或同步这个群的本地 Git 仓库',
       'repo.bound': '已绑定本地仓库',
       'repo.imported': '本地仓库已导入并绑定',
+      'repo.dirtyBound': '已绑定，但本地有未提交修改；同步前请先 commit 或 stash，不会自动覆盖。',
       'repo.importFailed': '群已创建，但本地目录导入失败：{message}。可在群标题栏点仓库按钮重试。',
       'repo.cloned': '已克隆到本地',
       'repo.pulled': '已 git pull',
@@ -441,6 +442,7 @@ window.__ModuleLoader__.load({
       'repo.buttonHint': 'Bind or sync this group’s local Git repository',
       'repo.bound': 'Local repository bound',
       'repo.imported': 'Local repository imported and bound',
+      'repo.dirtyBound': 'Bound, but the local repository has uncommitted changes; commit or stash before syncing.',
       'repo.importFailed': 'Group created, but importing the local repository failed: {message}. Retry from the repository button in the group header.',
       'repo.cloned': 'Repository cloned',
       'repo.pulled': 'git pull done',
@@ -1934,7 +1936,8 @@ window.__ModuleLoader__.load({
           const groupId = result.group?.id;
           pendingGroupId = groupId || '';
           if (repoMode === 'local' && groupId && localPath.trim()) {
-            await store.bindRepo(groupId, localPath.trim());
+            const bound = await store.bindRepo(groupId, localPath.trim());
+            if (bound.dirty) store.notify('info', t('repo.dirtyBound'));
           }
           onClose();
           if (groupId) await store.openGroup(groupId);
@@ -3630,12 +3633,14 @@ window.__ModuleLoader__.load({
                     if (!picked) return;
                     const result = await store.bindRepo(group.id, picked);
                     store.notify(
-                      'ok',
-                      result.action === 'cloned'
-                        ? t('repo.cloned')
-                        : result.action === 'imported'
-                          ? t('repo.imported')
-                          : t('repo.bound'),
+                      result.dirty ? 'info' : 'ok',
+                      result.dirty
+                        ? t('repo.dirtyBound')
+                        : result.action === 'cloned'
+                          ? t('repo.cloned')
+                          : result.action === 'imported'
+                            ? t('repo.imported')
+                            : t('repo.bound'),
                     );
                   } catch (failure) {
                     store.notify('error', t('notice.error', { message: String(failure.message || failure) }));
