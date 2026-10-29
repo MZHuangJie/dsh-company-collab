@@ -102,6 +102,7 @@ window.__ModuleLoader__.load({
       'chat.noMessages': '还没有消息，先说点什么吧。',
       'run.running': '正在处理',
       'run.finished': '已完成，过程已折叠',
+      'run.finishedOpen': '已完成',
       'run.steps': '步',
       'run.failed': '失败',
       'run.tool.bash': '运行命令',
@@ -294,6 +295,7 @@ window.__ModuleLoader__.load({
       'chat.noMessages': 'No messages yet — say hello.',
       'run.running': 'Working',
       'run.finished': 'Done — process collapsed',
+      'run.finishedOpen': 'Done',
       'run.steps': 'steps',
       'run.failed': 'Failed',
       'run.tool.bash': 'Run command',
@@ -920,7 +922,7 @@ window.__ModuleLoader__.load({
 
       function start() {
         refresh();
-        timer = setInterval(tick, 5000);
+        timer = setInterval(tick, 1500);
         const onVisible = () => {
           if (!document.hidden) tick();
         };
@@ -2019,7 +2021,7 @@ window.__ModuleLoader__.load({
             },
           },
           h('span', { className: 'dcc-runChevron' }, open ? '▾' : '▸'),
-          h('span', {}, finished ? t('run.finished') : t('run.running')),
+          h('span', {}, !finished ? t('run.running') : open ? t('run.finishedOpen') : t('run.finished')),
           duration ? h('span', { className: 'dcc-runDuration' }, duration) : null,
           h('span', { className: 'dcc-runCount' }, `${count} ${t('run.steps')}`),
         ),
@@ -2108,79 +2110,6 @@ window.__ModuleLoader__.load({
         if (activity.type === 'tool' && activity.toolCallId) tools.set(activity.toolCallId, step);
       }
       return steps;
-    }
-
-    function RunActivity({ t, messages, finished }) {
-      const [open, setOpen] = React.useState(!finished);
-      React.useEffect(() => {
-        if (finished) setOpen(false);
-      }, [finished]);
-      const steps = buildRunSteps(messages);
-      const count = steps.length;
-      return h(
-        'div',
-        { className: 'dcc-run' },
-        h(
-          'div',
-          {
-            className: 'dcc-runHead',
-            role: 'button',
-            tabIndex: 0,
-            onClick: () => setOpen((value) => !value),
-            onKeyDown: (event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
-                event.preventDefault();
-                setOpen((value) => !value);
-              }
-            },
-          },
-          h('span', { className: 'dcc-runChevron' }, open ? '▾' : '▸'),
-          h('span', {}, finished ? t('run.finished') : t('run.running')),
-          h('span', { className: 'dcc-runCount' }, `${count} ${t('run.steps')}`),
-        ),
-        open
-          ? h(
-              'div',
-              { className: 'dcc-runBody' },
-              steps.map((step) =>
-                h(
-                  'div',
-                  {
-                    key: step.id,
-                    className: 'dcc-step',
-                    'data-type': step.type || 'status',
-                    'data-status': step.status || 'done',
-                  },
-                  h(
-                    'span',
-                    { className: 'dcc-stepIcon' },
-                    h(Icon, { name: RUN_ICONS[step.type] || 'sparkle', size: 13 }),
-                  ),
-                  h(
-                    'div',
-                    { className: 'dcc-stepBody' },
-                    h(
-                      'div',
-                      { className: 'dcc-stepHead' },
-                      h('span', { className: 'dcc-stepTitle' }, step.title || '过程'),
-                      step.status === 'running'
-                        ? h('span', { className: 'dcc-stepStatus' }, t('run.running'))
-                        : step.status === 'failed'
-                          ? h('span', { className: 'dcc-stepStatus', 'data-failed': '' }, t('run.failed'))
-                          : null,
-                    ),
-                    step.detail
-                      ? h('div', { className: 'dcc-stepDetail' }, step.detail)
-                      : null,
-                    step.result
-                      ? h('div', { className: 'dcc-stepResult' }, step.result)
-                      : null,
-                  ),
-                ),
-              ),
-            )
-          : null,
-      );
     }
 
     function buildChatRows(items) {
