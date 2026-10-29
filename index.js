@@ -319,6 +319,14 @@ class CompanyHub {
     return { employee: result.employee, state: this.snapshot() };
   }
 
+  async renameAi(name) {
+    const value = String(name || '').trim();
+    if (!value) throw new HubError('请填写 AI 助理名称');
+    const result = await this.fetchJson('POST', '/api/ai/rename', { name: value });
+    await this.refresh(true);
+    return { employee: result.employee, state: this.snapshot() };
+  }
+
   async deleteGroup(groupId) {
     const id = String(groupId || '').trim();
     if (!id) throw new HubError('请选择要删除的群组');
@@ -722,6 +730,8 @@ function handleApi(req, res) {
         return hub.resetEmployee(body.employeeId).then((result) => ({ ok: true, ...result }));
       case 'POST me/rename':
         return hub.renameSelf(body.name).then((result) => ({ ok: true, ...result }));
+      case 'POST ai/rename':
+        return hub.renameAi(body.name).then((result) => ({ ok: true, ...result }));
       case 'POST groups/delete':
         return hub.deleteGroup(body.groupId).then((state) => ({ ok: true, state }));
       case 'POST git/bind':

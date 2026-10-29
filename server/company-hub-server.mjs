@@ -1654,6 +1654,21 @@ route('POST', /^\/api\/me\/rename$/, async (req) => {
   return { employee: publicEmployee(auth.employee) };
 });
 
+route('POST', /^\/api\/ai\/rename$/, async (req) => {
+  const auth = authenticate(req);
+  const body = await readJsonBody(req);
+  const name = str(body.name, 'AI 助理名称', { max: 40 });
+  const ai = db.aiMember(auth.company.id);
+  if (!ai) throw notFound('AI 助理不存在');
+  const clash = db
+    .companyEmployees(auth.company.id)
+    .some((entry) => entry.id !== ai.id && entry.name === name);
+  if (clash) throw bad('公司里已有同名成员，换一个名字');
+  ai.name = name;
+  await db.save();
+  return { employee: publicEmployee(ai) };
+});
+
 route('POST', /^\/api\/me\/git-token$/, async (req) => {
   const auth = authenticate(req);
   const token = employeeGitToken(auth.employee);
@@ -1814,7 +1829,6 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
   const asAi = body.asAi === true;
   const ai = db.aiMember(auth.company.id);
   const author = asAi && ai ? ai : auth.employee;
-  const wantsTask = body.task === true && author.isAi === false;
   const mentioned = author.isAi === false && /@\s*ai\b|@\s*AI\b|@\s*Ai\b|AI\s*助理/i.test(text);
   const approvalMatch = author.isAi === false ? /^\s*(允许|批准|拒绝|approve|reject)\s+([a-z0-9]{6})\s*$/i.exec(text) : null;
   if (approvalMatch) {
@@ -1842,72 +1856,12 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
     createdAt: now(),
   };
   db.data.messages.push(message);
-  let task = null;
-  let job = null;
-  if (wantsTask) {
-    if (!employeeOnline(auth.employee)) {
-      db.data.messages.push({
-        id: randomId('msg'),
-        companyId: auth.company.id,
-        groupId: group.id,
-        seq: ++group.seq,
-        text: `提出者「${auth.employee.name}」当前不在线，AI 任务已取消：${text.slice(0, 80)}`,
-        authorId: ai ? ai.id : auth.employee.id,
-        kind: 'system',
-        createdAt: now(),
-      });
-    } else {
-      task = {
-        id: randomId('task'),
-        companyId: auth.company.id,
-        groupId: group.id,
-        messageId: message.id,
-        text,
-        status: 'pending',
-        createdBy: auth.employee.id,
-        createdAt: now(),
-        assigneeId: auth.employee.id,
-      };
-      job = {
-        id: randomId('job'),
-        companyId: auth.company.id,
-        groupId: group.id,
-        taskId: task.id,
-        employeeId: auth.employee.id,
-        text,
-        branch: `ai/${task.id.slice(-6)}`,
-        status: 'pending',
-        createdAt: now(),
-      };
-      task.jobId = job.id;
-      message.kind = 'task';
-      message.taskId = task.id;
-      db.data.tasks.push(task);
-      db.data.aiJobs.push(job);
-      db.data.messages.push({
-        id: randomId('msg'),
-        companyId: auth.company.id,
-        groupId: group.id,
-        seq: ++group.seq,
-        text: `已生成 AI 任务 #${task.id.slice(-6)}：${text.slice(0, 80)}（等待提出者电脑上的 AI 处理）`,
-        authorId: ai ? ai.id : auth.employee.id,
-        kind: 'system',
-        taskId: task.id,
-        jobId: job.id,
-        createdAt: now(),
-      });
-    }
-  }
   await db.save();
   broadcastGroupEvent(group.id, 'message', { message: messageView(message) });
-  if (mentioned && !wantsTask) {
+  if (mentioned) {
     scheduleChatReply(auth.company, group, message);
   }
-  return {
-    message: messageView(message),
-    task: task ? { id: task.id, status: task.status } : null,
-    job: job ? { id: job.id, status: job.status } : null,
-  };
+  return { message: messageView(message) };
 });
 
 route('POST', /^\/api\/groups\/([a-z0-9_]+)\/read$/, async (req) => {
@@ -1922,61 +1876,6 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/read$/, async (req) => {
   return {};
 });
 
-route('GET', /^\/api\/tasks$/, async (req) => {
-  const auth = authenticate(req);
-  const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-  const status = url.searchParams.get('status');
-  const items = db.data.tasks
-    .filter((task) => task.companyId === auth.company.id)
-    .filter((task) => (status ? task.status === status : task.status !== 'done'))
-    .map((task) => ({
-      ...task,
-      groupName: db.group(task.groupId)?.name ?? '未知群组',
-      createdByName: memberName(task.createdBy),
-    }));
-  return { items };
-});
-
-route('POST', /^\/api\/tasks\/([a-z0-9_]+)\/claim$/, async (req) => {
-  const auth = authenticate(req);
-  const match = /^\/api\/tasks\/([a-z0-9_]+)\/claim$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
-  const task = db.data.tasks.find((entry) => entry.id === match[1]);
-  if (!task || task.companyId !== auth.company.id) throw notFound('任务不存在');
-  task.assigneeId = auth.employee.id;
-  task.status = 'claimed';
-  task.claimedAt = now();
-  await db.save();
-  return { task: { id: task.id, status: task.status, assigneeId: task.assigneeId } };
-});
-
-route('POST', /^\/api\/tasks\/([a-z0-9_]+)\/complete$/, async (req) => {
-  const auth = authenticate(req);
-  const match = /^\/api\/tasks\/([a-z0-9_]+)\/complete$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
-  const task = db.data.tasks.find((entry) => entry.id === match[1]);
-  if (!task || task.companyId !== auth.company.id) throw notFound('任务不存在');
-  const body = await readJsonBody(req);
-  const note = typeof body.note === 'string' && body.note.trim() ? str(body.note, '完成说明', { max: MAX_TEXT }) : '';
-  const asAi = body.asAi === true && db.aiMember(auth.company.id) !== undefined;
-  const group = db.group(task.groupId);
-  task.status = 'done';
-  task.completedAt = now();
-  task.completedBy = auth.employee.id;
-  if (note && group) {
-    db.data.messages.push({
-      id: randomId('msg'),
-      companyId: auth.company.id,
-      groupId: group.id,
-      seq: ++group.seq,
-      text: note,
-      authorId: asAi ? db.aiMember(auth.company.id).id : auth.employee.id,
-      kind: 'text',
-      taskId: task.id,
-      createdAt: now(),
-    });
-  }
-  await db.save();
-  return { task: { id: task.id, status: task.status } };
-});
 
 // ---------------------------------------------------------------- server
 

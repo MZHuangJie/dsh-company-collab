@@ -157,6 +157,10 @@ window.__ModuleLoader__.load({
       'settings.rename': '改名',
       'settings.renamePlaceholder': '新的显示名',
       'settings.renameHint': '显示名会同步给公司成员；消息里的历史署名也会跟着变。',
+      'settings.aiName': 'AI 助理名称',
+      'settings.aiNamePlaceholder': '新的 AI 助理名称',
+      'settings.aiNameHint': '任何员工都可以修改；历史消息署名会跟着更新。',
+      'settings.aiNameSaved': 'AI 助理名称已更新',
       'settings.role': '角色',
       'settings.accessCode': '管理员访问码',
       'settings.accessCodeHint': '同事加入公司时需要：公司 ID + 姓名 + 访问码。请通过可信渠道分享。',
@@ -359,6 +363,10 @@ window.__ModuleLoader__.load({
       'settings.rename': 'Rename',
       'settings.renamePlaceholder': 'New display name',
       'settings.renameHint': 'The display name is shared with company members; message bylines update too.',
+      'settings.aiName': 'AI assistant name',
+      'settings.aiNamePlaceholder': 'New AI assistant name',
+      'settings.aiNameHint': 'Any employee can change it; historical message bylines update too.',
+      'settings.aiNameSaved': 'AI assistant name updated',
       'settings.role': 'Role',
       'settings.accessCode': 'Admin access code',
       'settings.accessCodeHint': 'Colleagues join with company ID + name + access code. Share it over a trusted channel.',
@@ -1162,6 +1170,7 @@ window.__ModuleLoader__.load({
         },
         resetEmployee: (employeeId) => act('/employees/reset', { employeeId }),
         renameSelf: (name) => act('/me/rename', { name }),
+        renameAi: (name) => act('/ai/rename', { name }),
         deleteGroup: (groupId) => act('/groups/delete', { groupId }),
         heartbeat: () => request('POST', '/me/heartbeat', {}),
         aiJobs: async () => {
@@ -1773,6 +1782,8 @@ window.__ModuleLoader__.load({
       const me = identity?.employee;
       const [url, setUrl] = React.useState(data.serverUrl || '');
       const [renameValue, setRenameValue] = React.useState(me?.name || '');
+      const aiMember = (data.directory ?? []).find((entry) => entry.isAi);
+      const [aiNameValue, setAiNameValue] = React.useState(aiMember?.name || 'AI 助理');
       const [error, setError] = React.useState('');
       const [busy, setBusy] = React.useState(false);
 
@@ -1868,6 +1879,41 @@ window.__ModuleLoader__.load({
             ),
           ),
           h('p', { className: 'dcc-note' }, t('settings.renameHint')),
+          h('div', { className: 'dcc-mono', style: { marginTop: '10px' } }, `${t('settings.aiName')}：${aiMember?.name ?? 'AI 助理'}`),
+          h(
+            'div',
+            { className: 'dcc-inline', style: { marginTop: '6px' } },
+            h('input', {
+              className: 'dcc-input',
+              value: aiNameValue,
+              placeholder: t('settings.aiNamePlaceholder'),
+              onChange: (event) => setAiNameValue(event.target.value),
+              onKeyDown: (event) => {
+                if (event.key === 'Enter' && aiNameValue.trim() && aiNameValue.trim() !== aiMember?.name) {
+                  run(async () => {
+                    await store.renameAi(aiNameValue.trim());
+                    store.notify('ok', t('settings.aiNameSaved'));
+                  });
+                }
+              },
+            }),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dcc-btn',
+                style: { flex: 'none' },
+                disabled: busy || !aiNameValue.trim() || aiNameValue.trim() === aiMember?.name,
+                onClick: () =>
+                  run(async () => {
+                    await store.renameAi(aiNameValue.trim());
+                    store.notify('ok', t('settings.aiNameSaved'));
+                  }),
+              },
+              t('action.save'),
+            ),
+          ),
+          h('p', { className: 'dcc-note' }, t('settings.aiNameHint')),
           data.account
             ? h(
                 'div',
@@ -2211,14 +2257,6 @@ window.__ModuleLoader__.load({
             h('span', { className: 'dcc-msgTime' }, formatTime(message.createdAt)),
           ),
           h('div', { className: 'dcc-msgText' }, h(MarkdownText, { text: message.text })),
-          message.taskId
-            ? h(
-                'span',
-                { className: 'dcc-taskChip' },
-                h(Icon, { name: 'sparkle', size: 11 }),
-                `${t('task.badge')} #${String(message.taskId).slice(-6)}`,
-              )
-            : null,
         ),
       );
     }
@@ -2434,7 +2472,6 @@ window.__ModuleLoader__.load({
       const group = (data.groups ?? []).find((entry) => entry.id === groupId);
       const bucket = snap.messages[groupId] ?? { items: [], loading: false, error: '' };
       const [draft, setDraft] = React.useState('');
-      const [asTask, setAsTask] = React.useState(false);
       const [sending, setSending] = React.useState(false);
       const [mention, setMention] = React.useState(null);
       const [live, setLive] = React.useState(null);
@@ -2566,17 +2603,14 @@ window.__ModuleLoader__.load({
         );
       }
 
-      const groupTasks = (data.tasks ?? []).filter((task) => task.groupId === group.id);
-
       const send = async () => {
         const text = draft.trim();
         if (!text || sending) return;
         setSending(true);
         setMention(null);
         try {
-          await store.send(group.id, text, asTask);
+          await store.send(group.id, text);
           setDraft('');
-          setAsTask(false);
           store.notify('ok', t('notice.sent'));
         } catch (failure) {
           store.notify('error', t('notice.error', { message: String(failure.message || failure) }));
@@ -2732,30 +2766,6 @@ window.__ModuleLoader__.load({
                 h('div', { className: 'dcc-emptyDesc' }, t('chat.noMessages')),
               ),
         ),
-        groupTasks.length
-          ? h(
-              'div',
-              { className: 'dcc-taskStrip' },
-              h('span', { className: 'dcc-taskStripLabel' }, `${t('task.title')} · ${groupTasks.length}`),
-              groupTasks.map((task) =>
-                h(
-                  'button',
-                  {
-                    key: task.id,
-                    type: 'button',
-                    className: 'dcc-taskStripChip',
-                    title: `${task.text}\n\n${t('task.openHint')}`,
-                    onClick: async () => {
-                      const ok = await copyText(buildTaskPrompt(data, task));
-                      store.notify(ok ? 'ok' : 'error', ok ? t('task.copiedPrompt') : t('notice.clipboardFailed'));
-                    },
-                  },
-                  h(Icon, { name: 'sparkle', size: 11 }),
-                  task.text,
-                ),
-              ),
-            )
-          : null,
         h(
           'div',
           { className: 'dcc-composer' },
@@ -2830,20 +2840,9 @@ window.__ModuleLoader__.load({
                 'button',
                 {
                   type: 'button',
-                  className: 'dcc-taskToggle',
-                  'data-on': asTask ? '' : undefined,
-                  title: t('chat.taskHint'),
-                  onClick: () => setAsTask(!asTask),
-                },
-                h(Icon, { name: 'sparkle', size: 12 }),
-                t('chat.taskToggle'),
-              ),
-              h(
-                'button',
-                {
-                  type: 'button',
                   className: 'dcc-btn dcc-sendBtn',
                   'data-primary': '',
+                  style: { marginLeft: 'auto' },
                   disabled: !draft.trim() || sending,
                   onClick: send,
                 },
@@ -3090,7 +3089,6 @@ window.__ModuleLoader__.load({
             onSettings: () => setShowSettings(true),
           }),
           h(ChatPane, { t, snap, onNewGroup: () => setShowGroup(true) }),
-          h('aside', { className: 'dcc-side dcc-scrollThin' }, h(TasksCard, { t, snap })),
         ),
         showGroup ? h(GroupDialog, { t, snap, onClose: () => setShowGroup(false) }) : null,
         showSettings ? h(SettingsDialog, { t, snap, onClose: () => setShowSettings(false) }) : null,
@@ -3253,37 +3251,6 @@ window.__ModuleLoader__.load({
             )
           : null,
 
-        h(
-          'div',
-          { className: 'dcc-tabSection' },
-          h(
-            'div',
-            { className: 'dcc-tabSectionHead' },
-            h('span', {}, t('tab.tasks')),
-            tasks.length ? h('span', {}, String(tasks.length)) : null,
-          ),
-          tasks.length
-            ? tasks.slice(0, 8).map((task) =>
-                h(
-                  'div',
-                  { key: task.id, className: 'dcc-taskItem' },
-                  h(
-                    'div',
-                    { className: 'dcc-taskMeta' },
-                    h('span', {}, task.groupName),
-                    h('span', {}, '·'),
-                    h('span', {}, t('task.by', { name: task.createdByName })),
-                  ),
-                  h('div', { className: 'dcc-taskText' }, task.text),
-                  h(
-                    'div',
-                    { className: 'dcc-taskActions' },
-                    h('span', { className: 'dcc-note' }, t('task.autoHint')),
-                  ),
-                ),
-              )
-            : h('div', { className: 'dcc-note' }, t('task.empty')),
-        ),
 
         h(
           'div',
