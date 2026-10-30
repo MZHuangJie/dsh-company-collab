@@ -103,6 +103,28 @@ window.__ModuleLoader__.load({
       'direct.start': '发起单聊',
       'direct.empty': '还没有单聊',
       'direct.emptyHint': '从通讯录或公司成员里点单聊开始。',
+      'join.button': '搜索群组',
+      'join.title': '搜索并申请加入群组',
+      'join.search': '输入群组名称',
+      'join.searchAction': '搜索',
+      'join.apply': '申请加入',
+      'join.pending': '已申请',
+      'join.sent': '申请已发送，等待群主或管理员审批',
+      'join.empty': '没有找到可加入的群组',
+      'join.owner': '群主',
+      'admin.manage': '成员',
+      'admin.title': '群成员与申请',
+      'admin.requests': '待审批申请',
+      'admin.noRequests': '暂无待审批申请',
+      'admin.members': '群成员',
+      'admin.owner': '群主',
+      'admin.admin': '管理员',
+      'admin.approve': '通过',
+      'admin.reject': '拒绝',
+      'admin.transfer': '转让群主',
+      'admin.transferConfirm': '确认把群主转让给 {name}？',
+      'admin.makeAdmin': '设为管理员',
+      'admin.removeAdmin': '取消管理员',
       'contacts.title': '通讯录',
       'contacts.directory': '公司成员',
       'contacts.empty': '通讯录还是空的',
@@ -389,6 +411,28 @@ window.__ModuleLoader__.load({
       'direct.start': 'Start direct chat',
       'direct.empty': 'No direct chats yet',
       'direct.emptyHint': 'Start one from Contacts or Directory.',
+      'join.button': 'Find groups',
+      'join.title': 'Find and request to join',
+      'join.search': 'Group name',
+      'join.searchAction': 'Search',
+      'join.apply': 'Request',
+      'join.pending': 'Requested',
+      'join.sent': 'Request sent; waiting for the owner or an admin',
+      'join.empty': 'No groups available to join',
+      'join.owner': 'Owner',
+      'admin.manage': 'Members',
+      'admin.title': 'Members and requests',
+      'admin.requests': 'Pending requests',
+      'admin.noRequests': 'No pending requests',
+      'admin.members': 'Members',
+      'admin.owner': 'Owner',
+      'admin.admin': 'Admin',
+      'admin.approve': 'Approve',
+      'admin.reject': 'Reject',
+      'admin.transfer': 'Transfer owner',
+      'admin.transferConfirm': 'Transfer ownership to {name}?',
+      'admin.makeAdmin': 'Make admin',
+      'admin.removeAdmin': 'Remove admin',
       'contacts.title': 'Contacts',
       'contacts.directory': 'Directory',
       'contacts.empty': 'No contacts yet',
@@ -821,6 +865,11 @@ window.__ModuleLoader__.load({
 .dcc-accountMain{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
 .dcc-accountName{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcc-accountBadge{font-size:10px;color:var(--dsw-alias-brand-primary);flex:none}
+.dcc-searchInline{display:flex;align-items:center;gap:6px}
+.dcc-joinList{display:flex;flex-direction:column;gap:5px;max-height:260px;overflow-y:auto}
+.dcc-joinItem{display:flex;align-items:center;gap:8px;border:.5px solid var(--dsw-alias-border-l1);border-radius:8px;padding:7px 8px;background:var(--dsw-alias-bg-layer-1)}
+.dcc-joinMain{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.dcc-joinName{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcc-inline{display:flex;gap:8px;align-items:flex-end}
 .dcc-segment{display:inline-flex;align-self:flex-start;gap:2px;padding:2px;border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
 .dcc-segment button{border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer}
@@ -1584,6 +1633,18 @@ window.__ModuleLoader__.load({
           }
           return result;
         },
+        searchGroups: async (query) => {
+          const json = await request('GET', `/groups/search?q=${encodeURIComponent(query || '')}`);
+          return json.items ?? [];
+        },
+        requestJoinGroup: (groupId) => act('/groups/join-request', { groupId }),
+        groupRequests: async (groupId) => {
+          const json = await request('GET', `/group-requests?groupId=${encodeURIComponent(groupId)}`);
+          return json.items ?? [];
+        },
+        decideGroupRequest: (requestId, approve) => act('/group-requests/decide', { requestId, approve }),
+        setGroupOwner: (groupId, employeeId) => act('/groups/owner', { groupId, employeeId }),
+        setGroupAdmin: (groupId, employeeId, action) => act('/groups/admins', { groupId, employeeId, action }),
         send: async (groupId, text, options = false) => {
           const payload = typeof options === 'object' && options ? options : { task: Boolean(options) };
           const result = await act('/messages', { groupId, text, ...payload });
@@ -2567,7 +2628,7 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function Rail({ t, snap, query, setQuery, onNewGroup, onSettings }) {
+    function Rail({ t, snap, query, setQuery, onNewGroup, onJoinGroup, onSettings }) {
       const store = shared.store;
       const data = snap.data;
       const [peopleTab, setPeopleTab] = React.useState('contacts');
@@ -2615,6 +2676,12 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'dcc-railHead' },
               h('span', {}, t('groups.title')),
+              h(
+                'button',
+                { type: 'button', className: 'dcc-miniBtn', onClick: onJoinGroup, title: t('join.button') },
+                h(Icon, { name: 'search', size: 12 }),
+                t('join.button'),
+              ),
               h(
                 'button',
                 { type: 'button', className: 'dcc-miniBtn', onClick: onNewGroup },
@@ -3579,6 +3646,217 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function JoinGroupDialog({ t, onClose }) {
+      const store = shared.store;
+      const [query, setQuery] = React.useState('');
+      const [items, setItems] = React.useState([]);
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError] = React.useState('');
+      const [requested, setRequested] = React.useState({});
+      const search = async (value = query) => {
+        setLoading(true);
+        setError('');
+        try {
+          setItems(await store.searchGroups(value));
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setLoading(false);
+        }
+      };
+      React.useEffect(() => {
+        search('').catch(() => {});
+      }, []);
+      const apply = async (group) => {
+        try {
+          await store.requestJoinGroup(group.id);
+          setRequested((previous) => ({ ...previous, [group.id]: true }));
+          store.notify('ok', t('join.sent'));
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        }
+      };
+      return h(
+        Modal,
+        {
+          t,
+          title: t('join.title'),
+          onClose,
+          footer: [h('button', { key: 'close', type: 'button', className: 'dcc-btn', onClick: onClose }, t('action.close'))],
+        },
+        h(
+          'div',
+          { className: 'dcc-search dcc-searchInline' },
+          h(Icon, { name: 'search', size: 14 }),
+          h('input', {
+            value: query,
+            placeholder: t('join.search'),
+            onChange: (event) => setQuery(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key === 'Enter') search().catch(() => {});
+            },
+          }),
+          h('button', { type: 'button', className: 'dcc-miniBtn', disabled: loading, onClick: () => search().catch(() => {}) }, t('join.searchAction')),
+        ),
+        error ? h(ErrorLine, { text: error }) : null,
+        items.length
+          ? h(
+              'div',
+              { className: 'dcc-joinList' },
+              items.map((group) =>
+                h(
+                  'div',
+                  { key: group.id, className: 'dcc-joinItem' },
+                  h(
+                    'div',
+                    { className: 'dcc-joinMain' },
+                    h('div', { className: 'dcc-joinName' }, group.name),
+                    h(
+                      'div',
+                      { className: 'dcc-note' },
+                      `${t('join.owner')}：${group.ownerName || '—'} · ${t('groups.members', { count: group.memberCount })}${group.hasAi ? ` · ${t('groups.aiIn')}` : ''}`,
+                    ),
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'dcc-miniBtn',
+                      disabled: group.requested || requested[group.id],
+                      onClick: () => apply(group),
+                    },
+                    group.requested || requested[group.id] ? t('join.pending') : t('join.apply'),
+                  ),
+                ),
+              ),
+            )
+          : h('div', { className: 'dcc-note' }, loading ? t('loading') : t('join.empty')),
+      );
+    }
+
+    function GroupAdminDialog({ t, group, onClose }) {
+      const store = shared.store;
+      const [requests, setRequests] = React.useState([]);
+      const [error, setError] = React.useState('');
+      const [busy, setBusy] = React.useState(false);
+      const load = async () => {
+        try {
+          setRequests(await store.groupRequests(group.id));
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        }
+      };
+      React.useEffect(() => {
+        load().catch(() => {});
+      }, [group.id]);
+      const decide = async (request, approve) => {
+        setBusy(true);
+        setError('');
+        try {
+          await store.decideGroupRequest(request.id, approve);
+          await load();
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setBusy(false);
+        }
+      };
+      const memberAction = async (method, member, ...args) => {
+        setBusy(true);
+        setError('');
+        try {
+          await method(group.id, member.id, ...args);
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setBusy(false);
+        }
+      };
+      const members = (group.members ?? []).filter((member) => !member.isAi);
+      return h(
+        Modal,
+        {
+          t,
+          title: t('admin.title'),
+          onClose,
+          footer: [h('button', { key: 'close', type: 'button', className: 'dcc-btn', onClick: onClose }, t('action.close'))],
+        },
+        error ? h(ErrorLine, { text: error }) : null,
+        h(
+          'div',
+          { className: 'dcc-field' },
+          h('span', { className: 'dcc-label' }, t('admin.requests')),
+          requests.length
+            ? h(
+                'div',
+                { className: 'dcc-joinList' },
+                requests.map((request) =>
+                  h(
+                    'div',
+                    { key: request.id, className: 'dcc-joinItem' },
+                    h(Avatar, { name: request.employee?.name, small: true, avatarUrl: request.employee?.avatarUrl }),
+                    h('div', { className: 'dcc-joinMain' }, h('div', { className: 'dcc-joinName' }, request.employee?.name || '—')),
+                    h('button', { type: 'button', className: 'dcc-miniBtn', disabled: busy, onClick: () => decide(request, true) }, t('admin.approve')),
+                    h('button', { type: 'button', className: 'dcc-miniBtn', disabled: busy, onClick: () => decide(request, false) }, t('admin.reject')),
+                  ),
+                ),
+              )
+            : h('div', { className: 'dcc-note' }, t('admin.noRequests')),
+        ),
+        h(
+          'div',
+          { className: 'dcc-field' },
+          h('span', { className: 'dcc-label' }, t('admin.members')),
+          h(
+            'div',
+            { className: 'dcc-joinList' },
+            members.map((member) => {
+              const isOwner = group.ownerId === member.id;
+              const isAdmin = (group.adminIds ?? []).includes(member.id);
+              return h(
+                'div',
+                { key: member.id, className: 'dcc-joinItem' },
+                h(Avatar, { name: member.name, small: true, avatarUrl: member.avatarUrl }),
+                h(
+                  'div',
+                  { className: 'dcc-joinMain' },
+                  h('div', { className: 'dcc-joinName' }, `${member.name}${isOwner ? ` · ${t('admin.owner')}` : isAdmin ? ` · ${t('admin.admin')}` : ''}`),
+                ),
+                group.isOwner && !isOwner
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dcc-miniBtn',
+                        disabled: busy,
+                        onClick: () => {
+                          if (window.confirm(t('admin.transferConfirm', { name: member.name }))) {
+                            memberAction(store.setGroupOwner, member).catch(() => {});
+                          }
+                        },
+                      },
+                      t('admin.transfer'),
+                    )
+                  : null,
+                group.isOwner && !isOwner
+                  ? h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'dcc-miniBtn',
+                        disabled: busy,
+                        onClick: () => memberAction(store.setGroupAdmin, member, isAdmin ? 'remove' : 'add').catch(() => {}),
+                      },
+                      isAdmin ? t('admin.removeAdmin') : t('admin.makeAdmin'),
+                    )
+                  : null,
+              );
+            }),
+          ),
+        ),
+      );
+    }
+
     function ChatPane({ t, snap, onNewGroup }) {
       const store = shared.store;
       const data = snap.data;
@@ -3595,6 +3873,7 @@ window.__ModuleLoader__.load({
       const [mention, setMention] = React.useState(null);
       const live = (snap.liveByGroup ?? {})[groupId] ?? null;
       const [showKnowledge, setShowKnowledge] = React.useState(false);
+      const [showAdmin, setShowAdmin] = React.useState(false);
       const scroller = React.useRef(null);
       const textarea = React.useRef(null);
 
@@ -3804,13 +4083,27 @@ window.__ModuleLoader__.load({
               h(Icon, { name: 'folder', size: 12 }),
               t('repo.button'),
             ),
-            data.access?.admin
+            group.canManage && !isDirect
               ? h(
                   'button',
                   {
                     type: 'button',
                     className: 'dcc-miniBtn',
                     style: { marginLeft: 'auto' },
+                    title: t('admin.manage'),
+                    onClick: () => setShowAdmin(true),
+                  },
+                  h(Icon, { name: 'users', size: 12 }),
+                  t('admin.manage'),
+                )
+              : null,
+            group.isOwner && !isDirect
+              ? h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'dcc-miniBtn',
+                    style: group.canManage ? undefined : { marginLeft: 'auto' },
                     title: t('chat.delete'),
                     onClick: () => {
                       if (!window.confirm(t('chat.deleteConfirm', { name: group.name }))) return;
@@ -4018,6 +4311,7 @@ window.__ModuleLoader__.load({
           ),
         ),
         showKnowledge ? h(KnowledgeDialog, { t, snap, group, onClose: () => setShowKnowledge(false) }) : null,
+        showAdmin ? h(GroupAdminDialog, { t, group, onClose: () => setShowAdmin(false) }) : null,
       );
     }
 
@@ -4082,6 +4376,7 @@ window.__ModuleLoader__.load({
       const [showGroup, setShowGroup] = React.useState(false);
       const [showSettings, setShowSettings] = React.useState(false);
       const [showAccounts, setShowAccounts] = React.useState(false);
+      const [showJoin, setShowJoin] = React.useState(false);
 
       const data = snap.data;
       const identity = data?.identity;
@@ -4264,6 +4559,7 @@ window.__ModuleLoader__.load({
             query,
             setQuery,
             onNewGroup: () => setShowGroup(true),
+            onJoinGroup: () => setShowJoin(true),
             onSettings: () => setShowSettings(true),
           }),
           h(ChatPane, { t, snap, onNewGroup: () => setShowGroup(true) }),
@@ -4271,6 +4567,7 @@ window.__ModuleLoader__.load({
         showGroup ? h(GroupDialog, { t, snap, onClose: () => setShowGroup(false) }) : null,
         showSettings ? h(SettingsDialog, { t, snap, onClose: () => setShowSettings(false) }) : null,
         showAccounts ? h(AccountDialog, { t, snap, onClose: () => setShowAccounts(false) }) : null,
+        showJoin ? h(JoinGroupDialog, { t, onClose: () => setShowJoin(false) }) : null,
         h(Notice, { t, notice: snap.notice }),
       );
     }

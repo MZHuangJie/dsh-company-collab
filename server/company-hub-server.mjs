@@ -137,6 +137,7 @@ function emptyDb() {
     sessions: [],
     contacts: [],
     groups: [],
+    groupRequests: [],
     messages: [],
     tasks: [],
     reads: [],
@@ -196,11 +197,11 @@ class Database {
   }
 
   group(id) {
-    return this.data.groups.find((entry) => entry.id === id);
+    return ensureGroupRoles(this.data.groups.find((entry) => entry.id === id));
   }
 
   companyGroups(companyId) {
-    return this.data.groups.filter((entry) => entry.companyId === companyId);
+    return this.data.groups.filter((entry) => entry.companyId === companyId).map(ensureGroupRoles);
   }
 
   aiMember(companyId) {
@@ -302,6 +303,41 @@ try {
 }
 
 // ---------------------------------------------------------------- domain helpers
+
+function ensureGroupRoles(group) {
+  if (!group || group.kind === 'direct') return group;
+  if (!group.ownerId) group.ownerId = group.createdBy || group.memberIds?.[0] || null;
+  if (!Array.isArray(group.adminIds)) group.adminIds = [];
+  return group;
+}
+
+function isGroupManager(group, employeeId) {
+  const normalized = ensureGroupRoles(group);
+  return Boolean(normalized && (normalized.ownerId === employeeId || normalized.adminIds.includes(employeeId)));
+}
+
+function groupRoleFields(group, employeeId) {
+  const normalized = ensureGroupRoles(group);
+  if (!normalized || normalized.kind === 'direct') {
+    return { ownerId: null, ownerName: '', adminIds: [], isOwner: false, isAdmin: false, canManage: false, canDissolve: false };
+  }
+  const owner = db.employee(normalized.ownerId);
+  const isOwner = normalized.ownerId === employeeId;
+  const isAdmin = normalized.adminIds.includes(employeeId);
+  return {
+    ownerId: normalized.ownerId,
+    ownerName: owner?.name ?? '',
+    adminIds: normalized.adminIds,
+    isOwner,
+    isAdmin,
+    canManage: isOwner || isAdmin,
+    canDissolve: isOwner,
+  };
+}
+
+function pendingGroupRequests(groupId) {
+  return (db.data.groupRequests ?? []).filter((entry) => entry.groupId === groupId && entry.status === 'pending');
+}
 
 function avatarValue(value) {
   if (typeof value !== 'string') return null;
@@ -2097,6 +2133,8 @@ function stateView(auth) {
         repoPath: group.repoPath ?? null,
         unread,
         hasAi: Boolean(ai && group.memberIds.includes(ai.id)),
+        ...groupRoleFields(group, employee.id),
+        joinRequestCount: isGroupManager(group, employee.id) ? pendingGroupRequests(group.id).length : 0,
       };
     })
     .sort((a, b) => (b.lastMessage?.createdAt ?? b.createdAt) - (a.lastMessage?.createdAt ?? a.createdAt));
@@ -2751,6 +2789,142 @@ route('POST', /^\/api\/groups\/([a-z0-9_]+)\/repo-head$/, async (req) => {
   return { branch };
 });
 
+route('GET', /^\/api\/groups\/search$/, async (req) => {
+  const auth = authenticate(req);
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+  const query = (url.searchParams.get('q') ?? '').trim().toLowerCase();
+  const items = db
+    .companyGroups(auth.company.id)
+    .filter((group) => group.kind !== 'direct' && !group.memberIds.includes(auth.employee.id))
+    .filter((group) => !query || group.name.toLowerCase().includes(query))
+    .map((group) => {
+      const roles = groupRoleFields(group, auth.employee.id);
+      const pending = (db.data.groupRequests ?? []).find(
+        (entry) => entry.groupId === group.id && entry.employeeId === auth.employee.id && entry.status === 'pending',
+      );
+      return {
+        id: group.id,
+        name: group.name,
+        memberCount: group.memberIds.filter((id) => !db.employee(id)?.isAi).length,
+        ownerName: roles.ownerName,
+        hasAi: Boolean(db.aiMember(auth.company.id) && group.memberIds.includes(db.aiMember(auth.company.id).id)),
+        requested: Boolean(pending),
+        createdAt: group.createdAt,
+      };
+    })
+    .sort((left, right) => right.createdAt - left.createdAt);
+  return { items };
+});
+
+route('POST', /^\/api\/groups\/([a-z0-9_]+)\/join-request$/, async (req) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/join-request$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const group = db.group(match[1]);
+  if (!group || group.companyId !== auth.company.id || group.kind === 'direct') throw notFound('群组不存在');
+  if (group.memberIds.includes(auth.employee.id)) throw bad('你已经是这个群的成员');
+  let request = (db.data.groupRequests ?? []).find(
+    (entry) => entry.groupId === group.id && entry.employeeId === auth.employee.id && entry.status === 'pending',
+  );
+  if (!request) {
+    request = {
+      id: randomId('req'),
+      companyId: auth.company.id,
+      groupId: group.id,
+      employeeId: auth.employee.id,
+      status: 'pending',
+      createdAt: now(),
+      decidedAt: null,
+      decidedBy: null,
+    };
+    db.data.groupRequests.push(request);
+    postSystemMessage(auth.company, group, `📩 ${auth.employee.name} 申请加入群组，等待群主/管理员审批。`, { kind: 'system' });
+    await db.save();
+    broadcastGroupEvent(group.id, 'requests', {});
+  }
+  return { request: { id: request.id, status: request.status, groupId: group.id } };
+});
+
+route('GET', /^\/api\/groups\/([a-z0-9_]+)\/requests$/, async (req) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/requests$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const group = db.group(match[1]);
+  if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  if (!isGroupManager(group, auth.employee.id)) throw forbidden('只有群主或管理员可以查看申请');
+  const items = (db.data.groupRequests ?? [])
+    .filter((entry) => entry.groupId === group.id && entry.status === 'pending')
+    .map((entry) => ({
+      id: entry.id,
+      employee: publicEmployee(db.employee(entry.employeeId) ?? { id: entry.employeeId, name: '未知成员', role: '', isAi: false }),
+      createdAt: entry.createdAt,
+    }));
+  return { items };
+});
+
+route('POST', /^\/api\/group-requests\/([a-z0-9_]+)\/decide$/, async (req) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/group-requests\/([a-z0-9_]+)\/decide$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const request = (db.data.groupRequests ?? []).find((entry) => entry.id === match[1]);
+  if (!request || request.companyId !== auth.company.id) throw notFound('申请不存在');
+  const group = db.group(request.groupId);
+  if (!group || group.companyId !== auth.company.id) throw notFound('群组不存在');
+  if (!isGroupManager(group, auth.employee.id)) throw forbidden('只有群主或管理员可以审批');
+  if (request.status !== 'pending') throw bad('这条申请已经处理过了');
+  const body = await readJsonBody(req);
+  const approve = body.approve !== false;
+  request.status = approve ? 'approved' : 'rejected';
+  request.decidedAt = now();
+  request.decidedBy = auth.employee.id;
+  if (approve && !group.memberIds.includes(request.employeeId)) {
+    group.memberIds.push(request.employeeId);
+    postSystemMessage(auth.company, group, `✅ ${memberName(request.employeeId)} 已加入群组。`, { kind: 'system' });
+  }
+  await db.save();
+  broadcastGroupEvent(group.id, 'requests', {});
+  return { request: { id: request.id, status: request.status }, group: { id: group.id } };
+});
+
+route('POST', /^\/api\/groups\/([a-z0-9_]+)\/owner$/, async (req) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/owner$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const group = db.group(match[1]);
+  if (!group || group.companyId !== auth.company.id || group.kind === 'direct') throw notFound('群组不存在');
+  if (ensureGroupRoles(group).ownerId !== auth.employee.id) throw forbidden('只有群主可以转让群主');
+  const body = await readJsonBody(req);
+  const target = db.employee(str(body.employeeId, '新群主', { max: 80 }));
+  if (!target || target.companyId !== auth.company.id || target.isAi || !group.memberIds.includes(target.id)) {
+    throw bad('新群主必须是群里的真实成员');
+  }
+  group.ownerId = target.id;
+  group.adminIds = (group.adminIds ?? []).filter((id) => id !== target.id);
+  postSystemMessage(auth.company, group, `👑 群主已转让给 ${target.name}。`, { kind: 'system' });
+  await db.save();
+  broadcastGroupEvent(group.id, 'requests', {});
+  return { group: { id: group.id, ownerId: target.id } };
+});
+
+route('POST', /^\/api\/groups\/([a-z0-9_]+)\/admins$/, async (req) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/admins$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const group = db.group(match[1]);
+  if (!group || group.companyId !== auth.company.id || group.kind === 'direct') throw notFound('群组不存在');
+  if (ensureGroupRoles(group).ownerId !== auth.employee.id) throw forbidden('只有群主可以设置管理员');
+  const body = await readJsonBody(req);
+  const target = db.employee(str(body.employeeId, '成员', { max: 80 }));
+  if (!target || target.companyId !== auth.company.id || target.isAi || !group.memberIds.includes(target.id)) {
+    throw bad('管理员必须是群里的真实成员');
+  }
+  if (target.id === group.ownerId) throw bad('群主不能设为管理员');
+  const action = body.action === 'remove' ? 'remove' : 'add';
+  const admins = new Set(group.adminIds ?? []);
+  if (action === 'remove') admins.delete(target.id);
+  else admins.add(target.id);
+  group.adminIds = [...admins];
+  postSystemMessage(auth.company, group, action === 'remove' ? `已将 ${target.name} 取消管理员。` : `已将 ${target.name} 设为管理员。`, { kind: 'system' });
+  await db.save();
+  broadcastGroupEvent(group.id, 'requests', {});
+  return { group: { id: group.id, adminIds: group.adminIds } };
+});
+
 route('POST', /^\/api\/directs$/, async (req) => {
   const auth = authenticate(req);
   const body = await readJsonBody(req);
@@ -2805,6 +2979,8 @@ route('POST', /^\/api\/groups$/, async (req) => {
     kind: 'group',
     memberIds,
     createdBy: auth.employee.id,
+    ownerId: auth.employee.id,
+    adminIds: [],
     createdAt: now(),
     seq: 0,
     visibility: body.repo?.visibility === 'public' ? 'public' : 'private',
@@ -2834,12 +3010,16 @@ route('POST', /^\/api\/groups$/, async (req) => {
 
 route('DELETE', /^\/api\/groups\/([a-z0-9_]+)$/, async (req) => {
   const auth = authenticate(req);
-  if (auth.employee.role !== 'admin') throw forbidden('只有管理员可以删除群组');
   const groupId = /^\/api\/groups\/([a-z0-9_]+)$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname)[1];
   const group = db.group(groupId);
   if (!group || group.companyId !== auth.company.id) throw notFound('群组不存在');
+  if (!group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  if (group.kind !== 'direct' && ensureGroupRoles(group).ownerId !== auth.employee.id) {
+    throw forbidden('只有群主可以解散群聊');
+  }
   removeGroupRepo(group);
   db.data.groups = db.data.groups.filter((entry) => entry.id !== groupId);
+  db.data.groupRequests = (db.data.groupRequests ?? []).filter((entry) => entry.groupId !== groupId);
   db.data.messages = db.data.messages.filter((entry) => entry.groupId !== groupId);
   db.data.tasks = db.data.tasks.filter((entry) => entry.groupId !== groupId);
   db.data.reads = db.data.reads.filter((entry) => entry.groupId !== groupId);

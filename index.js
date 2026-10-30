@@ -839,6 +839,38 @@ class CompanyHub {
     return this.fetchJson('POST', '/api/directs', { employeeId });
   }
 
+  async searchGroups(query) {
+    const result = await this.fetchJson('GET', `/api/groups/search?q=${encodeURIComponent(query || '')}`);
+    return result.items ?? [];
+  }
+
+  async requestJoinGroup(groupId) {
+    return this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/join-request`, {});
+  }
+
+  async groupRequests(groupId) {
+    const result = await this.fetchJson('GET', `/api/groups/${encodeURIComponent(groupId)}/requests`);
+    return result.items ?? [];
+  }
+
+  async decideGroupRequest(requestId, approve) {
+    const result = await this.fetchJson('POST', `/api/group-requests/${encodeURIComponent(requestId)}/decide`, { approve: approve === true });
+    await this.refresh(true);
+    return result;
+  }
+
+  async setGroupOwner(groupId, employeeId) {
+    const result = await this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/owner`, { employeeId });
+    await this.refresh(true);
+    return result;
+  }
+
+  async setGroupAdmin(groupId, employeeId, action) {
+    const result = await this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/admins`, { employeeId, action });
+    await this.refresh(true);
+    return result;
+  }
+
   async markRead(groupId, seq) {
     await this.fetchJson('POST', `/api/groups/${encodeURIComponent(groupId)}/read`, { seq: Number(seq) || 0 });
     if (this.remote) {
@@ -1076,6 +1108,18 @@ function handleApi(req, res) {
         return hub.cancelAi(body.groupId).then((result) => ({ ok: true, ...result }));
       case 'POST directs':
         return hub.openDirect(body.employeeId).then((result) => ({ ok: true, ...result }));
+      case 'GET groups/search':
+        return hub.searchGroups(url.searchParams.get('q') ?? '').then((items) => ({ ok: true, items }));
+      case 'POST groups/join-request':
+        return hub.requestJoinGroup(body.groupId).then((result) => ({ ok: true, ...result }));
+      case 'GET group-requests':
+        return hub.groupRequests(url.searchParams.get('groupId') ?? '').then((items) => ({ ok: true, items }));
+      case 'POST group-requests/decide':
+        return hub.decideGroupRequest(body.requestId, body.approve).then((result) => ({ ok: true, ...result }));
+      case 'POST groups/owner':
+        return hub.setGroupOwner(body.groupId, body.employeeId).then((result) => ({ ok: true, ...result }));
+      case 'POST groups/admins':
+        return hub.setGroupAdmin(body.groupId, body.employeeId, body.action).then((result) => ({ ok: true, ...result }));
       case 'GET attachment':
         await hub.attachmentResponse(url.searchParams.get('groupId') ?? '', url.searchParams.get('id') ?? '', res);
         return {};
