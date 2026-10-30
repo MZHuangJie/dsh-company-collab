@@ -313,7 +313,7 @@ function ensureGroupRoles(group) {
 
 function isGroupManager(group, employeeId) {
   const normalized = ensureGroupRoles(group);
-  return Boolean(normalized && (normalized.ownerId === employeeId || normalized.adminIds.includes(employeeId)));
+  return Boolean(normalized && (normalized.ownerId === employeeId || (normalized.adminIds ?? []).includes(employeeId)));
 }
 
 function groupRoleFields(group, employeeId) {
