@@ -1266,6 +1266,7 @@ window.__ModuleLoader__.load({
       const listeners = new Set();
       const readMarks = new Map();
       const liveStreams = new Map();
+      let companyStream = null;
       let timer = null;
       let noticeTimer = null;
 
@@ -1406,6 +1407,7 @@ window.__ModuleLoader__.load({
 
       function start() {
         refresh();
+        watchCompany();
         const onVisible = () => {
           if (!document.hidden) tick();
         };
@@ -1533,6 +1535,62 @@ window.__ModuleLoader__.load({
           if (!ids.has(groupId)) stopLive(groupId);
         }
         for (const groupId of ids) watchGroup(groupId);
+        if (!companyStream) watchCompany();
+      };
+
+      const stopCompanyStream = () => {
+        if (!companyStream) return;
+        companyStream.stop();
+        companyStream = null;
+      };
+
+      const watchCompany = () => {
+        if (companyStream) return;
+        const controller = new AbortController();
+        let stopped = false;
+        let retry = null;
+        const stream = {
+          stop() {
+            stopped = true;
+            if (retry) clearTimeout(retry);
+            controller.abort();
+          },
+        };
+        companyStream = stream;
+        const connect = async () => {
+          try {
+            const response = await fetch(`${API}/company-events`, {
+              headers: { accept: 'text/event-stream' },
+              signal: controller.signal,
+            });
+            if (!response.ok || !response.body) throw new Error(`company events ${response.status}`);
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done || stopped) break;
+              buffer += decoder.decode(value, { stream: true });
+              let boundary;
+              while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+                const block = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                let eventName = 'message';
+                const dataLines = [];
+                for (const line of block.split('\n')) {
+                  if (line.startsWith('event:')) eventName = line.slice(6).trim();
+                  else if (line.startsWith('data:')) dataLines.push(line.slice(5).trim());
+                }
+                if (!dataLines.length || eventName === 'hello') continue;
+                refresh(true).catch(() => {});
+              }
+            }
+          } catch (error) {
+            if (stopped || controller.signal.aborted) return;
+          }
+          if (!stopped) retry = setTimeout(connect, 2000);
+        };
+        connect();
       };
 
       return {
@@ -1562,18 +1620,21 @@ window.__ModuleLoader__.load({
         switchAccount: async (key) => {
           const result = await act('/accounts/switch', { key });
           stopAllLive();
+          stopCompanyStream();
           publish({ selectedGroup: '', messages: {}, liveByGroup: {} });
           return result;
         },
         loginOnServer: async (serverUrl, companyId, employeeName, accessCode) => {
           const result = await act('/accounts/login', { serverUrl, companyId, employeeName, accessCode });
           stopAllLive();
+          stopCompanyStream();
           publish({ selectedGroup: '', messages: {}, liveByGroup: {} });
           return result;
         },
         createCompanyOnServer: async (serverUrl, companyName, employeeName) => {
           const result = await act('/accounts/create', { serverUrl, companyName, employeeName });
           stopAllLive();
+          stopCompanyStream();
           publish({ selectedGroup: '', messages: {}, liveByGroup: {} });
           return result;
         },

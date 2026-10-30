@@ -261,6 +261,49 @@ class CompanyHub {
     }
   }
 
+  async pipeCompanyEvents(req, res) {
+    const base = this.state.serverUrl;
+    if (!base) throw new HubError('尚未配置服务器');
+    if (!this.state.identity) throw new HubError('尚未登录公司账号');
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    req.on('close', abort);
+    let response;
+    try {
+      response = await fetch(`${base}/api/company/events`, {
+        headers: { accept: 'text/event-stream', authorization: `Bearer ${this.state.identity.token}` },
+        signal: controller.signal,
+      });
+    } catch (error) {
+      req.off('close', abort);
+      throw new HubError(`公司事件流连接失败：${textOf(error)}`);
+    }
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => '');
+      req.off('close', abort);
+      throw new HubError(`公司事件流失败（HTTP ${response.status}）${text ? `：${text.slice(0, 200)}` : ''}`, response.status);
+    }
+    res.writeHead(200, {
+      'content-type': 'text/event-stream; charset=utf-8',
+      'cache-control': 'no-cache, no-transform',
+      connection: 'keep-alive',
+      'x-accel-buffering': 'no',
+    });
+    const reader = response.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!res.write(Buffer.from(value))) await new Promise((resolve) => res.once('drain', resolve));
+        if (res.writableEnded) break;
+      }
+    } finally {
+      req.off('close', abort);
+      reader.cancel().catch(() => {});
+      if (!res.writableEnded) res.end();
+    }
+  }
+
   // ---- account
 
   accountKey(serverUrl = this.state.serverUrl, identity = this.state.identity) {
@@ -998,6 +1041,10 @@ function handleApi(req, res) {
     const eventsMatch = method === 'GET' ? /^groups\/([a-z0-9_]+)\/events$/.exec(action) : null;
     if (eventsMatch) {
       await hub.pipeEvents(eventsMatch[1], req, res);
+      return;
+    }
+    if (method === 'GET' && action === 'company-events') {
+      await hub.pipeCompanyEvents(req, res);
       return;
     }
     switch (`${method} ${action}`) {

@@ -544,6 +544,20 @@ function scheduleChatReply(company, group, trigger) {
 }
 
 const GROUP_STREAMS = new Map();
+const COMPANY_STREAMS = new Map();
+
+function broadcastCompanyEvent(companyId, type, payload) {
+  const clients = COMPANY_STREAMS.get(companyId);
+  if (!clients?.size) return;
+  const body = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const res of clients) {
+    try {
+      res.write(body);
+    } catch {
+      clients.delete(res);
+    }
+  }
+}
 
 function broadcastGroupEvent(groupId, type, payload) {
   const clients = GROUP_STREAMS.get(groupId);
@@ -605,6 +619,37 @@ function serveGroupEvents(req, res, url) {
     clearInterval(heartbeat);
     clients.delete(res);
     if (!clients.size && GROUP_STREAMS.get(group.id) === clients) GROUP_STREAMS.delete(group.id);
+  };
+  req.on('close', cleanup);
+  res.on('close', cleanup);
+}
+
+function serveCompanyEvents(req, res) {
+  const auth = authenticate(req);
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no',
+  });
+  res.write(`retry: 2000\nevent: hello\ndata: ${JSON.stringify({ companyId: auth.company.id })}\n\n`);
+  let clients = COMPANY_STREAMS.get(auth.company.id);
+  if (!clients) {
+    clients = new Set();
+    COMPANY_STREAMS.set(auth.company.id, clients);
+  }
+  clients.add(res);
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      clearInterval(heartbeat);
+    }
+  }, 15_000);
+  const cleanup = () => {
+    clearInterval(heartbeat);
+    clients.delete(res);
+    if (!clients.size && COMPANY_STREAMS.get(auth.company.id) === clients) COMPANY_STREAMS.delete(auth.company.id);
   };
   req.on('close', cleanup);
   res.on('close', cleanup);
@@ -2880,6 +2925,7 @@ route('POST', /^\/api\/group-requests\/([a-z0-9_]+)\/decide$/, async (req) => {
   }
   await db.save();
   broadcastGroupEvent(group.id, 'requests', {});
+  broadcastCompanyEvent(auth.company.id, 'groups', { groupId: group.id, employeeId: request.employeeId, status: request.status });
   return { request: { id: request.id, status: request.status }, group: { id: group.id } };
 });
 
@@ -3206,6 +3252,15 @@ const server = http.createServer(async (req, res) => {
   const pathname = url.pathname;
   if (pathname.startsWith('/git/')) {
     serveGit(req, res, url);
+    return;
+  }
+  if (req.method === 'GET' && pathname === '/api/company/events') {
+    try {
+      serveCompanyEvents(req, res);
+    } catch (error) {
+      if (!res.headersSent) sendError(res, error);
+      else res.end();
+    }
     return;
   }
   if (req.method === 'GET' && /^\/api\/groups\/[a-z0-9_]+\/events$/.test(pathname)) {
