@@ -853,11 +853,13 @@ class CompanyHub {
       { headers: { authorization: `Bearer ${this.state.identity.token}` } },
     );
     if (!response.ok) throw new HubError(`附件读取失败：HTTP ${response.status}`);
-    res.writeHead(response.status, {
+    const headers = {
       'content-type': response.headers.get('content-type') || 'application/octet-stream',
-      'content-length': response.headers.get('content-length') || '',
       'cache-control': 'private, max-age=3600',
-    });
+    };
+    const contentLength = response.headers.get('content-length');
+    if (contentLength) headers['content-length'] = contentLength;
+    res.writeHead(response.status, headers);
     for await (const chunk of response.body) res.write(chunk);
     res.end();
   }
