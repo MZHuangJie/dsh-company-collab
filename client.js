@@ -1512,6 +1512,8 @@ window.__ModuleLoader__.load({
                   if (snapshot.selectedGroup === groupId) loadMessages(groupId, true).catch(() => {});
                 } else if (eventName === 'approval') {
                   if (snapshot.selectedGroup === groupId) loadMessages(groupId, true).catch(() => {});
+                } else if (eventName === 'requests') {
+                  refresh().catch(() => {});
                 }
               }
             }
