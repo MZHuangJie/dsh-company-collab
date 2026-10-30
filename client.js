@@ -4095,6 +4095,7 @@ window.__ModuleLoader__.load({
                   },
                   h(Icon, { name: 'users', size: 12 }),
                   t('admin.manage'),
+                  group.joinRequestCount ? h('span', { className: 'dcc-accountBadge' }, group.joinRequestCount) : null,
                 )
               : null,
             group.isOwner && !isDirect
