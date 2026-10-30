@@ -788,6 +788,8 @@ window.__ModuleLoader__.load({
 .dcc-attachList{display:flex;flex-wrap:wrap;gap:6px;padding:2px 0 6px}
 .dcc-attachChip{display:inline-flex;align-items:center;gap:5px;max-width:220px;padding:3px 5px;border:.5px solid var(--dsw-alias-border-l1);border-radius:7px;background:var(--dsw-alias-bg-layer-1);font-size:11px;color:var(--dsw-alias-label-secondary)}
 .dcc-attachThumb{width:28px;height:28px;object-fit:cover;border-radius:5px}
+.dcc-attachThumbWrap{position:relative;width:28px;height:28px;flex:none;display:inline-flex;align-items:center;justify-content:center;border-radius:5px;background:var(--dsw-alias-bg-layer-2);overflow:hidden}
+.dcc-attachThumbWrap .dcc-attachThumb{position:absolute;inset:0}
 .dcc-attachName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dcc-attachRemove{border:0;background:transparent;color:var(--dsw-alias-label-tertiary);cursor:pointer;font-size:14px;line-height:1;padding:0 2px}
 .dcc-msgAttachments{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
@@ -4193,11 +4195,19 @@ window.__ModuleLoader__.load({
                       'div',
                       { key: item.id, className: 'dcc-attachChip' },
                       /^image\//i.test(item.mime || '')
-                        ? h('img', {
-                            className: 'dcc-attachThumb',
-                            src: store.attachmentUrl(group.id, item.id),
-                            alt: item.name,
-                          })
+                        ? h(
+                            'span',
+                            { className: 'dcc-attachThumbWrap' },
+                            h(Icon, { name: 'folder', size: 12 }),
+                            h('img', {
+                              className: 'dcc-attachThumb',
+                              src: store.attachmentUrl(group.id, item.id),
+                              alt: item.name,
+                              onError: (event) => {
+                                event.currentTarget.style.display = 'none';
+                              },
+                            }),
+                          )
                         : h(Icon, { name: 'folder', size: 13 }),
                       h('span', { className: 'dcc-attachName' }, item.name),
                       h(

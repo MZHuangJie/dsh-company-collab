@@ -805,7 +805,6 @@ class CompanyHub {
   }
 
   async attachmentResponse(groupId, attachmentId, res) {
-    await this.ensureGitToken();
     const response = await fetch(
       `${this.state.serverUrl}/api/groups/${encodeURIComponent(groupId)}/attachments/${encodeURIComponent(attachmentId)}`,
       { headers: { authorization: `Bearer ${this.state.identity.token}` } },
