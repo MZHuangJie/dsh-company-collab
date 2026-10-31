@@ -125,6 +125,13 @@ window.__ModuleLoader__.load({
       'admin.transferConfirm': '确认把群主转让给 {name}？',
       'admin.makeAdmin': '设为管理员',
       'admin.removeAdmin': '取消管理员',
+      'files.button': '文件',
+      'files.title': '群工作区文件',
+      'files.root': '根目录',
+      'files.parent': '上一级',
+      'files.folder': '目录',
+      'files.download': '下载',
+      'files.empty': '这个目录还没有文件',
       'contacts.title': '通讯录',
       'contacts.directory': '公司成员',
       'contacts.empty': '通讯录还是空的',
@@ -433,6 +440,13 @@ window.__ModuleLoader__.load({
       'admin.transferConfirm': 'Transfer ownership to {name}?',
       'admin.makeAdmin': 'Make admin',
       'admin.removeAdmin': 'Remove admin',
+      'files.button': 'Files',
+      'files.title': 'Group workspace files',
+      'files.root': 'Root',
+      'files.parent': 'Up',
+      'files.folder': 'Folder',
+      'files.download': 'Download',
+      'files.empty': 'No files in this folder',
       'contacts.title': 'Contacts',
       'contacts.directory': 'Directory',
       'contacts.empty': 'No contacts yet',
@@ -872,6 +886,13 @@ window.__ModuleLoader__.load({
 .dcc-joinItem{display:flex;align-items:center;gap:8px;border:.5px solid var(--dsw-alias-border-l1);border-radius:8px;padding:7px 8px;background:var(--dsw-alias-bg-layer-1)}
 .dcc-joinMain{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
 .dcc-joinName{font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcc-fileBar{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.dcc-filePath{font-size:11px;color:var(--dsw-alias-label-tertiary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcc-fileList{display:flex;flex-direction:column;gap:4px;max-height:360px;overflow-y:auto}
+.dcc-fileRow{display:flex;align-items:center;gap:8px;width:100%;padding:7px 8px;border:.5px solid var(--dsw-alias-border-l1);border-radius:8px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-size:12px;text-align:left;text-decoration:none;cursor:pointer}
+.dcc-fileName{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dcc-fileSize,.dcc-fileDownload{font-size:10.5px;color:var(--dsw-alias-label-tertiary);flex:none}
+.dcc-fileDownload{color:var(--dsw-alias-brand-primary)}
 .dcc-inline{display:flex;gap:8px;align-items:flex-end}
 .dcc-segment{display:inline-flex;align-self:flex-start;gap:2px;padding:2px;border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-bg-layer-1)}
 .dcc-segment button{border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer}
@@ -1720,6 +1741,12 @@ window.__ModuleLoader__.load({
           act('/attachments', { groupId, name, dataBase64, mime }).then((json) => json.attachment),
         attachmentUrl: (groupId, attachmentId) =>
           `/company-collab/api/attachment?groupId=${encodeURIComponent(groupId)}&id=${encodeURIComponent(attachmentId)}`,
+        groupFiles: async (groupId, dir = '') => {
+          const json = await request('GET', `/group-files?groupId=${encodeURIComponent(groupId)}&dir=${encodeURIComponent(dir)}`);
+          return json;
+        },
+        groupFileUrl: (groupId, filePath) =>
+          `/company-collab/api/group-file?groupId=${encodeURIComponent(groupId)}&path=${encodeURIComponent(filePath)}`,
         cancelAi: (groupId) => act('/ai/cancel', { groupId }),
         claimTask: (taskId) => act('/tasks/claim', { taskId }),
         completeTask: (taskId, note) => act('/tasks/complete', { taskId, note, asAi: true }),
@@ -3922,6 +3949,80 @@ window.__ModuleLoader__.load({
       );
     }
 
+    function FilesDialog({ t, group, onClose }) {
+      const store = shared.store;
+      const [dir, setDir] = React.useState('');
+      const [data, setData] = React.useState({ path: '', parent: null, entries: [] });
+      const [loading, setLoading] = React.useState(false);
+      const [error, setError] = React.useState('');
+      const load = async (target = dir) => {
+        setLoading(true);
+        setError('');
+        try {
+          setData(await store.groupFiles(group.id, target));
+        } catch (failure) {
+          setError(String(failure.message || failure));
+        } finally {
+          setLoading(false);
+        }
+      };
+      React.useEffect(() => {
+        load(dir).catch(() => {});
+      }, [dir, group.id]);
+      return h(
+        Modal,
+        {
+          t,
+          title: t('files.title'),
+          onClose,
+          footer: [h('button', { key: 'close', type: 'button', className: 'dcc-btn', onClick: onClose }, t('action.close'))],
+        },
+        h(
+          'div',
+          { className: 'dcc-fileBar' },
+          data.parent !== null
+            ? h(
+                'button',
+                { type: 'button', className: 'dcc-miniBtn', onClick: () => setDir(data.parent || '') },
+                h(Icon, { name: 'close', size: 12 }),
+                t('files.parent'),
+              )
+            : null,
+          h('span', { className: 'dcc-filePath' }, data.path ? `/${data.path}` : `/${t('files.root')}`),
+          h(
+            'button',
+            { type: 'button', className: 'dcc-miniBtn', style: { marginLeft: 'auto' }, disabled: loading, onClick: () => load(dir).catch(() => {}) },
+            h(Icon, { name: 'retry', size: 12 }),
+            t('action.refresh'),
+          ),
+        ),
+        error ? h(ErrorLine, { text: error }) : null,
+        data.entries.length
+          ? h(
+              'div',
+              { className: 'dcc-fileList' },
+              data.entries.map((entry) =>
+                h(
+                  entry.isDirectory ? 'button' : 'a',
+                  {
+                    key: entry.path,
+                    type: entry.isDirectory ? 'button' : undefined,
+                    className: 'dcc-fileRow',
+                    href: entry.isDirectory ? undefined : store.groupFileUrl(group.id, entry.path),
+                    download: entry.isDirectory ? undefined : entry.name,
+                    onClick: entry.isDirectory ? () => setDir(entry.path) : undefined,
+                  },
+                  h(Icon, { name: 'folder', size: 14 }),
+                  h('span', { className: 'dcc-fileName' }, entry.name),
+                  h('span', { className: 'dcc-fileSize' }, entry.isDirectory ? t('files.folder') : fileSize(entry.size)),
+                  h('span', { className: 'dcc-fileDownload' }, entry.isDirectory ? '' : t('files.download')),
+                ),
+              ),
+            )
+          : h('div', { className: 'dcc-note' }, loading ? t('loading') : t('files.empty')),
+      );
+    }
+
     function ChatPane({ t, snap, onNewGroup }) {
       const store = shared.store;
       const data = snap.data;
@@ -3939,6 +4040,7 @@ window.__ModuleLoader__.load({
       const live = (snap.liveByGroup ?? {})[groupId] ?? null;
       const [showKnowledge, setShowKnowledge] = React.useState(false);
       const [showAdmin, setShowAdmin] = React.useState(false);
+      const [showFiles, setShowFiles] = React.useState(false);
       const scroller = React.useRef(null);
       const textarea = React.useRef(null);
 
@@ -4147,6 +4249,17 @@ window.__ModuleLoader__.load({
               },
               h(Icon, { name: 'folder', size: 12 }),
               t('repo.button'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'dcc-miniBtn',
+                title: t('files.title'),
+                onClick: () => setShowFiles(true),
+              },
+              h(Icon, { name: 'folder', size: 12 }),
+              t('files.button'),
             ),
             group.canManage && !isDirect
               ? h(
@@ -4386,6 +4499,7 @@ window.__ModuleLoader__.load({
         ),
         showKnowledge ? h(KnowledgeDialog, { t, snap, group, onClose: () => setShowKnowledge(false) }) : null,
         showAdmin ? h(GroupAdminDialog, { t, group, onClose: () => setShowAdmin(false) }) : null,
+        showFiles ? h(FilesDialog, { t, group, onClose: () => setShowFiles(false) }) : null,
       );
     }
 

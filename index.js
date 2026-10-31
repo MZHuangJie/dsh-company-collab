@@ -865,6 +865,29 @@ class CompanyHub {
   }
 
 
+  async listGroupFiles(groupId, dir = '') {
+    return this.fetchJson('GET', `/api/groups/${encodeURIComponent(groupId)}/files?dir=${encodeURIComponent(dir || '')}`);
+  }
+
+  async groupFileResponse(groupId, filePath, res) {
+    const response = await fetch(
+      `${this.state.serverUrl}/api/groups/${encodeURIComponent(groupId)}/files/download?path=${encodeURIComponent(filePath)}`,
+      { headers: { authorization: `Bearer ${this.state.identity.token}` } },
+    );
+    if (!response.ok) throw new HubError(`文件下载失败：HTTP ${response.status}`);
+    const headers = {
+      'content-type': response.headers.get('content-type') || 'application/octet-stream',
+      'cache-control': 'private, max-age=60',
+    };
+    for (const name of ['content-length', 'content-disposition']) {
+      const value = response.headers.get(name);
+      if (value) headers[name] = value;
+    }
+    res.writeHead(response.status, headers);
+    for await (const chunk of response.body) res.write(chunk);
+    res.end();
+  }
+
   async sendMessage(groupId, text, options = {}) {
     const body = { text: String(text || '').trim(), task: options.task === true };
     if (options.asAi === true) body.asAi = true;
@@ -1049,7 +1072,13 @@ function handleApi(req, res) {
       await hub.pipeCompanyEvents(req, res);
       return;
     }
+    if (method === 'GET' && action === 'group-file') {
+      await hub.groupFileResponse(url.searchParams.get('groupId') ?? '', url.searchParams.get('path') ?? '', res);
+      return;
+    }
     switch (`${method} ${action}`) {
+      case 'GET group-files':
+        return hub.listGroupFiles(url.searchParams.get('groupId') ?? '', url.searchParams.get('dir') ?? '');
       case 'GET state':
         await hub.refreshAccount(false).catch(() => {});
         if (hub.configured) await hub.refresh(false).catch(() => {});

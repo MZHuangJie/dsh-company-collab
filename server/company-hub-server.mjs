@@ -433,6 +433,71 @@ function dshHostWorkspace(company, group) {
   return target;
 }
 
+const WORKSPACE_SKIP = new Set(['.git', 'node_modules', '.company-attachments', '.dsh']);
+
+function groupWorkspaceRoot(group) {
+  return fs.realpathSync(dshHostWorkspace(db.company(group.companyId), group));
+}
+
+function groupWorkspacePath(group, relativePath = '') {
+  const root = groupWorkspaceRoot(group);
+  const target = path.resolve(root, String(relativePath || ''));
+  if (target !== root && !target.startsWith(root + path.sep)) throw bad('文件路径不合法');
+  if (!fs.existsSync(target)) throw notFound('文件不存在');
+  const real = fs.realpathSync(target);
+  if (real !== root && !real.startsWith(root + path.sep)) throw bad('文件路径不合法');
+  return { root, path: real };
+}
+
+function listWorkspaceFiles(group, relativeDir = '') {
+  const root = groupWorkspaceRoot(group);
+  const current = path.resolve(root, String(relativeDir || ''));
+  if (current !== root && !current.startsWith(root + path.sep)) throw bad('目录不合法');
+  if (!fs.existsSync(current) || !fs.statSync(current).isDirectory()) throw notFound('目录不存在');
+  const entries = fs
+    .readdirSync(current, { withFileTypes: true })
+    .filter((entry) => !WORKSPACE_SKIP.has(entry.name) && !entry.isSymbolicLink())
+    .map((entry) => {
+      const absolute = path.join(current, entry.name);
+      const stat = fs.statSync(absolute);
+      return {
+        name: entry.name,
+        path: path.relative(root, absolute).split(path.sep).join('/'),
+        isDirectory: entry.isDirectory(),
+        size: entry.isDirectory() ? 0 : stat.size,
+        updatedAt: stat.mtimeMs,
+      };
+    })
+    .sort((left, right) => Number(right.isDirectory) - Number(left.isDirectory) || left.name.localeCompare(right.name));
+  const relative = path.relative(root, current).split(path.sep).join('/');
+  return {
+    path: relative === '.' ? '' : relative,
+    parent: relative ? path.posix.dirname(relative) === '.' ? '' : path.posix.dirname(relative) : null,
+    entries,
+  };
+}
+
+function fileContentType(name) {
+  const ext = path.extname(name || '').toLowerCase();
+  return {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.svg': 'image/svg+xml',
+    '.pdf': 'application/pdf',
+    '.txt': 'text/plain; charset=utf-8',
+    '.md': 'text/markdown; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.csv': 'text/csv; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.zip': 'application/zip',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  }[ext] || 'application/octet-stream';
+}
+
 function dshHostPrompt(company, group) {
   const history = db.data.messages
     .filter((entry) => entry.groupId === group.id && (entry.kind === 'text' || entry.kind === 'task'))
@@ -3072,6 +3137,35 @@ route('DELETE', /^\/api\/groups\/([a-z0-9_]+)$/, async (req) => {
   db.data.approvals = db.data.approvals.filter((entry) => entry.groupId !== groupId);
   await db.save();
   return { removed: true };
+});
+
+route('GET', /^\/api\/groups\/([a-z0-9_]+)\/files$/, async (req) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/files$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const group = db.group(match[1]);
+  if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  const dir = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('dir') || '';
+  return listWorkspaceFiles(group, dir);
+});
+
+route('GET', /^\/api\/groups\/([a-z0-9_]+)\/files\/download$/, async (req, res) => {
+  const auth = authenticate(req);
+  const match = /^\/api\/groups\/([a-z0-9_]+)\/files\/download$/.exec(new URL(req.url ?? '/', 'http://127.0.0.1').pathname);
+  const group = db.group(match[1]);
+  if (!group || group.companyId !== auth.company.id || !group.memberIds.includes(auth.employee.id)) throw notFound('群组不存在');
+  const relative = new URL(req.url ?? '/', 'http://127.0.0.1').searchParams.get('path') || '';
+  if (!relative) throw bad('缺少文件路径');
+  const filePath = groupWorkspacePath(group, relative).path;
+  const stat = fs.statSync(filePath);
+  if (!stat.isFile()) throw bad('不是文件');
+  const name = path.basename(filePath);
+  res.writeHead(200, {
+    'content-type': fileContentType(name),
+    'content-length': stat.size,
+    'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(name)}`,
+    'cache-control': 'private, max-age=60',
+  });
+  fs.createReadStream(filePath).pipe(res);
 });
 
 route('GET', /^\/api\/groups\/([a-z0-9_]+)\/messages$/, async (req) => {
