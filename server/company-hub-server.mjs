@@ -1728,6 +1728,7 @@ class AcpHost {
     const prompt = [
       `（群聊：公司「${this.company.name}」/ 群「${this.group.name}」；成员：${members || '成员'}；发送者：${db.employee(trigger.authorId)?.name ?? '成员'}）`,
       '你是这个群的 AI 助理，运行在服务器 DSH 主机，拥有完整工具。直接回答；需要改文件/命令就执行，敏感操作会请求群审批。',
+      '遇到文件权限不足、路径在工作区外、或需要 root 的情况：不要自己先判断“无法执行”，也不要直接给用户 root/sudo 命令。必须先实际调用工具尝试操作，让 DSH 权限系统向群里发起审批并等待结果；只有工具明确返回权限拒绝、审批后仍失败，才说明需要运维调整权限或提供 root 执行通道。',
       '',
       await knowledgePrompt(this.company, this.group, text),
       '',
