@@ -1718,7 +1718,7 @@ class AcpHost {
 
   async run(text, trigger) {
     const connection = await this.ensure();
-    this.runState = { runId: randomId('run'), thought: '', answer: '', triggeredBy: trigger.authorId, tools: new Map(), activities: [], startedAt: now() };
+    this.runState = { runId: randomId('run'), thought: '', answer: '', triggeredBy: trigger.authorId, tools: new Map(), activities: [], startedAt: now(), approvalRequested: false, permissionRetry: 0 };
     broadcastGroupEvent(this.group.id, 'run', { runId: this.runState.runId, kind: 'start' });
     const members = db
       .companyEmployees(this.company.id)
@@ -1767,6 +1767,32 @@ class AcpHost {
       }, 0);
     } catch (error) {
       if (!this.runState?.cancelled) throw error;
+    }
+    const afterFirst = this.runState;
+    if (
+      afterFirst &&
+      !afterFirst.cancelled &&
+      !afterFirst.approvalRequested &&
+      afterFirst.permissionRetry < 1 &&
+      /(权限|无法写入|不能写入|没有写权限|permission denied|eacces|需要\s*root|sudo)/i.test(afterFirst.answer)
+    ) {
+      afterFirst.permissionRetry += 1;
+      postSystemMessage(
+        this.company,
+        this.group,
+        'AI 刚才没有实际调用工具。正在要求它重新尝试并触发群审批…',
+      );
+      try {
+        await connection.request('session/prompt', {
+          sessionId: this.sessionId,
+          prompt: [{
+            type: 'text',
+            text: '你刚才只回复了权限问题，没有实际调用工具，因此没有触发 DSH 审批。现在不要解释、不要给用户 root 命令，立即实际调用工具执行需要做的操作，让 DSH 权限系统发起群审批；只有工具明确失败后才说明原因。',
+          }],
+        }, 0);
+      } catch (error) {
+        if (!this.runState?.cancelled) console.warn('[company-hub] 权限重试失败', error);
+      }
     }
     const state = this.runState;
     this.runState = null;
@@ -1900,6 +1926,7 @@ class AcpHost {
     if (method !== 'session/request_permission') throw new Error(`不支持的 ACP 请求：${method}`);
     const state = this.runState;
     if (!state) return { outcome: { outcome: 'cancelled' } };
+    state.approvalRequested = true;
     const tool = params?.toolCall ?? {};
     const known = state.tools.get(tool.toolCallId) ?? {};
     const title = tool.title || tool.name || known.title || tool.rawInput?.description || '工具调用';
